@@ -17,6 +17,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import crypto from "node:crypto";
 import path from "node:path";
 
 import { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
@@ -92,6 +93,29 @@ function label(state: StudioState): string {
 }
 
 const slide = Schema.decodeSync(SlideId);
+
+/**
+ * Keep libuv's thread pool busy until the scope closes, as on a loaded CI runner. File system
+ * calls share the pool's four threads with the eight pbkdf2 jobs, so each one waits behind them.
+ */
+const busyThreadPool = Effect.acquireRelease(
+  Effect.sync(() => {
+    const busy = { on: true };
+    const spin = () => {
+      if (busy.on) {
+        crypto.pbkdf2("fuse-deck", "salt", 100_000, 32, "sha256", spin);
+      }
+    };
+    for (let job = 0; job < 8; job++) {
+      spin();
+    }
+    return busy;
+  }),
+  (busy) =>
+    Effect.sync(() => {
+      busy.on = false;
+    })
+);
 
 describe("DeckScopes", () => {
   it.live("opens each deck in its own scope on its own dev server", () =>
@@ -173,10 +197,11 @@ describe("DeckScopes", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 
-  it.live("reports a slide written on disk right after the stream's first report", () =>
+  it.live("reports an edit made right after the first report, on a busy thread pool", () =>
     Effect.gen(function* () {
       const { scopes, deckA } = yield* setup(Duration.seconds(10));
       const fs = yield* FileSystem.FileSystem;
+      yield* busyThreadPool;
       const a = yield* scopes.open(deckA, newRequestId());
       const reports = yield* Queue.unbounded<DeckChanged>();
       yield* scopes.changes(a.scopeId).pipe(

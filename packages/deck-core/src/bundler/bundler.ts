@@ -47,6 +47,7 @@ import { containedResolutionPlugin } from "./contained-resolution.ts";
 import { containedServingPlugin } from "./contained-serving.ts";
 import { deckPlugins } from "./deck-plugin.ts";
 import type { DeckManifestModule, Embedder } from "./deck-plugin.ts";
+import { pollDeck } from "./deck-poll.ts";
 import { firstPaint, loadFuseTheme } from "./fuse-theme.ts";
 import type { FirstPaint, FuseThemeUnavailable, InvalidTheme } from "./fuse-theme.ts";
 import { compileSlide } from "./mdx.ts";
@@ -242,11 +243,9 @@ export class Bundler extends Context.Service<
             // studio frames it under a `frame-src http://127.0.0.1:*` policy.
             host: "127.0.0.1",
             fs: { allow: [deck.root, runtimeRoot, ...dependencies.map(({ root }) => root)] },
-            // A deck holds a few dozen files, so polling them costs little, and an edit reaches the
-            // page within 100 ms. On a busy Mac, FSEvents delivered slide edits 10 s late or not
-            // within a minute. Chokidar's CHOKIDAR_USEPOLLING cannot turn it off there: Vite's
-            // bundled copy keeps FSEvents when only the variable asks for polling.
-            watch: { usePolling: true, interval: 100 },
+            // No chokidar: `dev` polls the deck itself and reports each file on `server.watcher`,
+            // which drives live reload as chokidar's events would. See `deck-poll.ts`.
+            watch: null,
           },
         });
 
@@ -276,6 +275,11 @@ export class Bundler extends Context.Service<
               (created) =>
                 Effect.promise(() => created.close()).pipe(Effect.timeout(VITE_CLOSE_TIMEOUT), Effect.ignore)
             );
+            // Vite's watcher is a no-op emitter here; the poll feeds it. It runs before the server
+            // listens, and its finalizer runs before the server closes.
+            yield* pollDeck(deck.root, (event, file) => {
+              server.watcher.emit(event, file);
+            }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
             const url =
               options._tag === "Standalone"
                 ? yield* listen(server)
