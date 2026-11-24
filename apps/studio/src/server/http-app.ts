@@ -7,6 +7,9 @@
  * - `POST /api/ticket` takes only the renderer's exact origin, with its CORS preflight; the bearer
  *   travels in `Authorization`, so a browser always preflights it.
  * - `GET /ws` takes only the renderer's exact origin and an unspent ticket.
+ * - `GET /api/deck` takes only a request with no Origin (main's) and the bearer. It answers the
+ *   open deck's address, the only page main lets Present show. Neither the renderer nor a deck
+ *   page can ask, since a browser sends an Origin with a request that carries `Authorization`.
  *
  * CORS allows the renderer's origin alone, never `*`, and no response sets a cookie. A deck's dev
  * server is another origin, so a framed deck reaches none of these routes.
@@ -20,7 +23,14 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
-import { SESSION_PATH, SessionRequest, SOCKET_PATH, TICKET_PATH } from "../contract/studio-launch.ts";
+import {
+  DECK_PATH,
+  SESSION_PATH,
+  SessionRequest,
+  SOCKET_PATH,
+  TICKET_PATH,
+} from "../contract/studio-launch.ts";
+import { DeckScopes } from "./deck-scopes.ts";
 import { StudioAuth } from "./studio-auth.ts";
 
 /** Who may ask: no Origin at all, or exactly the renderer's. */
@@ -48,6 +58,7 @@ export const makeHttpApp = Effect.fnUntraced(function* (
 ) {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const auth = yield* StudioAuth;
+  const scopes = yield* DeckScopes;
   const url = new URL(request.url, "http://127.0.0.1");
   const origin = Option.fromUndefinedOr(request.headers.origin);
   const allowed = (policy: OriginPolicy) =>
@@ -140,6 +151,24 @@ export const makeHttpApp = Effect.fnUntraced(function* (
         return refuse(401);
       }
       return yield* rpcSocket;
+    }
+    case DECK_PATH: {
+      if (request.method !== "GET") {
+        return refuse(405);
+      }
+      if (Option.isSome(origin)) {
+        return refuse(403);
+      }
+      const bearer = bearerFrom(request.headers.authorization);
+      if (Option.isNone(bearer)) {
+        return refuse(401);
+      }
+      const accepted = yield* Effect.result(auth.checkBearer(bearer.value));
+      if (accepted._tag === "Failure") {
+        return refuse(401);
+      }
+      const url = yield* scopes.openUrl;
+      return HttpServerResponse.jsonUnsafe({ url: Option.getOrNull(url) });
     }
     default:
       return refuse(404);

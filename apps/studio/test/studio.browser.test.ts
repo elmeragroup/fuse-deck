@@ -1,5 +1,8 @@
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
-import { mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import * as Stream from "effect/Stream";
+import { mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "playwright";
@@ -13,11 +16,13 @@ import {
   TICKET_PATH,
   TicketResponse,
 } from "../src/contract/studio-launch.ts";
+import { ScopeId } from "../src/contract/studio-rpc.ts";
 import { startBackend } from "./backend.ts";
 import type { Backend } from "./backend.ts";
 import { DECK_A, DECK_B, writeDeck } from "./decks.ts";
 import { serveRenderer } from "./renderer-server.ts";
 import type { RendererServer } from "./renderer-server.ts";
+import { connectRpc } from "./rpc-client.ts";
 
 declare global {
   // oxlint-disable-next-line typescript/consistent-type-definitions -- only an interface merges into the DOM's Window
@@ -455,5 +460,360 @@ describe("the studio renderer", () => {
     await writeFile(manifest, text.replace('"a-one",\n    "a-two"', '"a-two",\n    "a-one"'));
     await page.getByRole("listitem").nth(1).getByRole("button", { name: "A one" }).waitFor();
     expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("IFRAME");
+  });
+});
+
+/** The Source tab's editor for the open slide, once it holds `text`. */
+async function openSource(page: Page, file: string, text: string) {
+  await page.getByRole("tab", { name: "Source" }).click();
+  const editor = page.getByRole("textbox", { name: `Source of ${file}` });
+  await expect.poll(() => editor.inputValue()).toBe(text);
+  return editor;
+}
+
+/** The save shortcut; the editor takes Ctrl+S on every platform, beside Cmd+S on macOS. */
+const SAVE_KEY = "Control+S";
+
+describe("the Source tab", () => {
+  it("saves the draft with the shortcut, and the preview shows the saved slide", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    const deck = await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# A one, saved\n");
+    await page.getByText("Unsaved changes").waitFor();
+    await editor.press(SAVE_KEY);
+    await page.getByText("Saved slides/a-one.mdx.").waitFor();
+    expect(await readFile(path.join(deckA, "slides", "a-one.mdx"), "utf8")).toBe("# A one, saved\n");
+    await page.getByText("Unsaved changes").waitFor({ state: "detached" });
+    // The preview panel is hidden but mounted: the deck reloaded the slide behind it.
+    await deck.getByRole("heading", { name: "A one, saved" }).waitFor({ state: "attached" });
+  });
+
+  it("saves invalid MDX and shows its problem at its line, also while the draft has more edits", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# A one\n\n{1 +}\n\nText\n");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await page.getByText("Saved slides/a-one.mdx, which does not compile.").waitFor();
+    expect(await readFile(path.join(deckA, "slides", "a-one.mdx"), "utf8")).toBe(
+      "# A one\n\n{1 +}\n\nText\n"
+    );
+    const problem = page.getByRole("heading", { name: "Line 3, column 5: this slide does not compile" });
+    await problem.waitFor();
+    // The parser's message and the hint read as two sentences.
+    expect(await page.locator(".studio-source-problem-text").textContent()).toBe(
+      "slides/a-one.mdx:3:5 does not compile: Could not parse expression with acorn. Fix the MDX at that position. A `<` or `{` in prose must be escaped as `\\<` or `\\{`."
+    );
+    expect(await page.locator('.studio-source-gutter [data-problem="true"]').textContent()).toBe("3");
+    await editor.fill("# A one\n\n{1 +}\n\nText, edited\n");
+    await page.getByText("Unsaved changes").waitFor();
+    await problem.waitFor();
+    // Go to line selects the line the problem names.
+    await page.getByRole("button", { name: "Go to line 3" }).click();
+    expect(
+      await editor.evaluate((element: HTMLTextAreaElement) =>
+        element.value.slice(element.selectionStart, element.selectionEnd)
+      )
+    ).toBe("{1 +}");
+  });
+
+  it("keeps the draft beside the disk's version when the slide changed on disk, and saves it over only when asked", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const file = path.join(deckA, "slides", "a-one.mdx");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# My draft\n");
+    await writeFile(file, "# An agent's edit\n");
+    await page.getByRole("heading", { name: "slides/a-one.mdx changed on disk" }).waitFor();
+    await editor.press(SAVE_KEY);
+    await page
+      .getByRole("heading", { name: "slides/a-one.mdx changed on disk since you opened it" })
+      .waitFor();
+    expect(await readFile(file, "utf8")).toBe("# An agent's edit\n");
+    expect(await page.getByRole("textbox", { name: "Your draft" }).inputValue()).toBe("# My draft\n");
+    expect(await page.getByRole("textbox", { name: "On disk" }).inputValue()).toBe("# An agent's edit\n");
+    await page.getByRole("button", { name: "Save my draft over it" }).click();
+    await page.getByText("Saved slides/a-one.mdx.").waitFor();
+    expect(await readFile(file, "utf8")).toBe("# My draft\n");
+  });
+
+  it("keeps the draft when the slide file was deleted, and writes it back when asked", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const file = path.join(deckA, "slides", "a-one.mdx");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# My draft\n");
+    await unlink(file);
+    await page.getByRole("heading", { name: "slides/a-one.mdx was deleted on disk" }).waitFor();
+    await editor.press(SAVE_KEY);
+    await page
+      .getByRole("heading", { name: "slides/a-one.mdx was deleted on disk since you opened it" })
+      .waitFor();
+    expect(await page.getByRole("textbox", { name: "Your draft" }).inputValue()).toBe("# My draft\n");
+    await expect.poll(() => readFile(file, "utf8").catch(() => null)).toBeNull();
+    await page.getByRole("button", { name: "Save my draft as the slide" }).click();
+    await page.getByText("Saved slides/a-one.mdx.").waitFor();
+    expect(await readFile(file, "utf8")).toBe("# My draft\n");
+  });
+
+  it("keeps the draft when the slide was removed from the deck", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# My draft\n");
+    // What `fuse-deck slides remove a-one` does: the order first, then the file.
+    const manifest = path.join(deckA, "deck.json");
+    await writeFile(manifest, (await readFile(manifest, "utf8")).replace('"a-one",\n    ', ""));
+    await unlink(path.join(deckA, "slides", "a-one.mdx"));
+    await page.getByRole("button", { name: "A one" }).waitFor({ state: "detached" });
+    await editor.press(SAVE_KEY);
+    await page.getByRole("heading", { name: "The deck no longer has the slide a-one" }).waitFor();
+    expect(await page.getByRole("textbox", { name: "Your draft" }).inputValue()).toBe("# My draft\n");
+    expect(await readOrder(deckA)).toEqual(["a-two", "a-three"]);
+  });
+
+  it("keeps an unsaved draft through a dropped connection, and saves it after the reconnect", async () => {
+    const sockets: ProxiedSocket[] = [];
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA }, (page) =>
+      proxySockets(page, {
+        fromPage: (_message, socket) => {
+          if (!sockets.includes(socket)) {
+            sockets.push(socket);
+          }
+          return true;
+        },
+        fromServer: () => true,
+      })
+    );
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# Typed before the drop\n");
+    const [first] = sockets;
+    if (first === undefined) {
+      throw new Error("No RPC socket was proxied.");
+    }
+    await first.page.close();
+    await first.server.close();
+    await page
+      .getByRole("status")
+      .getByText(/Reconnecting/)
+      .waitFor();
+    await expect.poll(() => sockets.length).toBeGreaterThan(1);
+    expect(await editor.inputValue()).toBe("# Typed before the drop\n");
+    await editor.press(SAVE_KEY);
+    await page.getByText("Saved slides/a-one.mdx.").waitFor();
+    expect(await readFile(path.join(deckA, "slides", "a-one.mdx"), "utf8")).toBe("# Typed before the drop\n");
+  });
+
+  it("asks before Open… or Close drops an unsaved draft, and Save writes it before closing", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const file = path.join(deckA, "slides", "a-one.mdx");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# My draft\n");
+    const dialog = page.getByRole("dialog", { name: "Save your changes to slides/a-one.mdx?" });
+
+    await page.getByRole("button", { name: "Open…" }).click();
+    await dialog.waitFor();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await dialog.waitFor({ state: "detached" });
+    expect(await editor.inputValue()).toBe("# My draft\n");
+
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await dialog.getByRole("button", { name: "Save", exact: true }).click();
+    await page.getByRole("heading", { name: "No deck open" }).waitFor();
+    expect(await readFile(file, "utf8")).toBe("# My draft\n");
+  });
+
+  it("asks from the Preview tab too, and Discard opens the other deck without writing the draft", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    answerPrompts(page, [deckB]);
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# My draft\n");
+    await page.getByRole("tab", { name: "Preview" }).click();
+    await page.getByRole("button", { name: "Open…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Save your changes to slides/a-one.mdx?" });
+    await dialog.getByRole("button", { name: "Discard" }).click();
+    await previewFrame(page, "Deck B", "B one");
+    expect(await readFile(path.join(deckA, "slides", "a-one.mdx"), "utf8")).toBe("# A one\n");
+  });
+
+  it("keeps the workspace and the draft while the deck reopens, as after a backend restart", async () => {
+    const bearer = await exchangeBootstrap();
+    const page = await openStudio({ bearer, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# Typed before the restart\n");
+    const before = await page.locator('iframe[title="Deck A preview"]').getAttribute("data-scope-id");
+    // A restarted backend comes back with no deck open, so the studio opens it again. Closing the
+    // deck from another client puts the page in the same state without a new address and bearer,
+    // which the browser-tab harness cannot follow.
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* connectRpc(backend, renderer.origin, bearer);
+          yield* client["deck.close"]({ scopeId: ScopeId.make(before ?? "") });
+        })
+      )
+    );
+    // The Source tab shows, so the reopened deck's frame is attached but hidden.
+    await page
+      .locator(`iframe[title="Deck A preview"]:not([data-scope-id="${before ?? ""}"])`)
+      .waitFor({ state: "attached" });
+    expect(await page.getByRole("heading", { name: "No deck open" }).count()).toBe(0);
+    expect(await editor.inputValue()).toBe("# Typed before the restart\n");
+    await editor.press(SAVE_KEY);
+    await page.getByText("Saved slides/a-one.mdx.").waitFor();
+    expect(await readFile(path.join(deckA, "slides", "a-one.mdx"), "utf8")).toBe(
+      "# Typed before the restart\n"
+    );
+  });
+
+  it("keeps the draft when the deck cannot be opened again, and opens it on Retry", async () => {
+    const bearer = await exchangeBootstrap();
+    const page = await openStudio({ bearer, deck: deckA });
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: renderer.origin });
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# Typed before the restart\n");
+    const before = await page.locator('iframe[title="Deck A preview"]').getAttribute("data-scope-id");
+    // Without its deck.json, the deck cannot be opened again.
+    const manifest = path.join(deckA, "deck.json");
+    await rename(manifest, `${manifest}.away`);
+    // A restarted backend comes back with no deck open; closing the deck from another client puts
+    // the page in the same state, as in the test above.
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* connectRpc(backend, renderer.origin, bearer);
+          yield* client["deck.close"]({ scopeId: ScopeId.make(before ?? "") });
+        })
+      )
+    );
+    const failed = page.getByRole("alert").filter({ hasText: "Deck A could not be opened again" });
+    await failed.waitFor();
+    expect(await page.getByRole("heading", { name: "No deck open" }).count()).toBe(0);
+    expect(await editor.inputValue()).toBe("# Typed before the restart\n");
+    await failed.getByRole("button", { name: "Copy draft" }).click();
+    await page.getByText("Copied your draft of slides/a-one.mdx.").waitFor();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("# Typed before the restart\n");
+
+    await rename(`${manifest}.away`, manifest);
+    await failed.getByRole("button", { name: "Retry" }).click();
+    await page
+      .locator(`iframe[title="Deck A preview"]:not([data-scope-id="${before ?? ""}"])`)
+      .waitFor({ state: "attached" });
+    await failed.waitFor({ state: "detached" });
+    expect(await editor.inputValue()).toBe("# Typed before the restart\n");
+    await editor.press(SAVE_KEY);
+    await page.getByText("Saved slides/a-one.mdx.").waitFor();
+    expect(await readFile(path.join(deckA, "slides", "a-one.mdx"), "utf8")).toBe(
+      "# Typed before the restart\n"
+    );
+  });
+
+  it("reads the slide again after a reconnect, which missed the report of a change on disk", async () => {
+    const bearer = await exchangeBootstrap();
+    const sockets: ProxiedSocket[] = [];
+    let holdTickets = false;
+    const tickets = Promise.withResolvers<void>();
+    const page = await openStudio({ bearer, deck: deckA }, async (page) => {
+      await proxySockets(page, {
+        fromPage: (_message, socket) => {
+          if (!sockets.includes(socket)) {
+            sockets.push(socket);
+          }
+          return true;
+        },
+        fromServer: () => true,
+      });
+      // While held, the page cannot start its next session.
+      await page.route(new URL(TICKET_PATH, backend.url).href, async (route) => {
+        if (holdTickets) {
+          await tickets.promise;
+        }
+        await route.continue();
+      });
+    });
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    const scope = ScopeId.make(
+      (await page.locator('iframe[title="Deck A preview"]').getAttribute("data-scope-id")) ?? ""
+    );
+    // Another client sees the watcher's reports, so the test knows when the change was reported.
+    const reported: string[] = [];
+    const watcher = Effect.runFork(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* connectRpc(backend, renderer.origin, bearer);
+          yield* client["deck.changed"]({ scopeId: scope }).pipe(
+            Stream.runForEach(({ paths }) =>
+              Effect.sync(() => {
+                reported.push(...paths, "(report)");
+              })
+            )
+          );
+        })
+      )
+    );
+    try {
+      await expect.poll(() => reported.length).toBeGreaterThan(0);
+      holdTickets = true;
+      const [first] = sockets;
+      await first?.page.close();
+      await first?.server.close();
+      await page
+        .getByRole("status")
+        .getByText(/Reconnecting/)
+        .waitFor();
+      await writeFile(path.join(deckA, "slides", "a-one.mdx"), "# A one, while disconnected\n");
+      await expect.poll(() => reported).toContain("slides/a-one.mdx");
+      tickets.resolve();
+      await expect.poll(() => editor.inputValue(), { timeout: 15_000 }).toBe("# A one, while disconnected\n");
+    } finally {
+      await Effect.runPromise(Fiber.interrupt(watcher));
+    }
+  });
+
+  it("writes a CRLF slide back with CRLF, and a mixed one with its majority ending", async () => {
+    const file = path.join(deckA, "slides", "a-one.mdx");
+    await writeFile(file, "# A one\r\n\r\nText\n");
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n\nText\n");
+    // The draft as the file has it reads as no edit.
+    await editor.fill("# A one\n\nText\n");
+    expect(await page.getByText("Unsaved changes").count()).toBe(0);
+    await editor.fill("# A one\n\nMore text\n");
+    await editor.press(SAVE_KEY);
+    await page.getByText("Saved slides/a-one.mdx.").waitFor();
+    expect(await readFile(file, "utf8")).toBe("# A one\r\n\r\nMore text\r\n");
+  });
+
+  it("loads a change on disk into a draft that has no edits", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await writeFile(path.join(deckA, "slides", "a-one.mdx"), "# A one, from an agent\n");
+    await openSource(page, "slides/a-one.mdx", "# A one, from an agent\n");
+    await page.getByText("Loaded slides/a-one.mdx: it changed on disk.").waitFor();
+  });
+});
+
+describe("Present", () => {
+  it("puts the preview, at the current slide, in the browser's fullscreen", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    const deck = await previewFrame(page, "Deck A", "A one");
+    await page.getByRole("button", { name: "A two" }).click();
+    await waitForCurrent(page, "A two");
+    await page.getByRole("tab", { name: "Source" }).click();
+    await page.getByRole("button", { name: "Present" }).click();
+    await expect
+      .poll(() => page.evaluate(() => document.fullscreenElement?.getAttribute("title") ?? null))
+      .toBe("Deck A preview");
+    await deck.getByRole("region", { name: "A two" }).waitFor();
+    expect(await page.getByRole("tab", { name: "Preview" }).getAttribute("aria-selected")).toBe("true");
   });
 });

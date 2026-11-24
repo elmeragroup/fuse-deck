@@ -16,18 +16,28 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Electron from "electron";
 
-import { PickedDeck } from "@elmeragroup/fuse-deck-studio/contract/desktop-bridge";
+import { LeaveIntent, PickedDeck } from "@elmeragroup/fuse-deck-studio/contract/desktop-bridge";
 import { BackendConnection } from "@elmeragroup/fuse-deck-studio/contract/studio-launch";
 
 import { BackendAuth } from "../backend/backend-auth.ts";
+import { openDeckUrl } from "../backend/backend-deck.ts";
+import type { OpenDeckUnknown } from "../backend/backend-deck.ts";
 import { BackendManager } from "../backend/backend-manager.ts";
 import type { BackendCommand, BackendTiming } from "../backend/backend-manager.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
-import { BACKEND_CONNECTION_CHANNEL, INITIAL_DECK_CHANNEL, PICK_DECK_CHANNEL } from "../ipc/channels.ts";
+import {
+  BACKEND_CONNECTION_CHANNEL,
+  INITIAL_DECK_CHANNEL,
+  LEAVE_CHANNEL,
+  PICK_DECK_CHANNEL,
+  PRESENT_CHANNEL,
+  UNSAVED_DRAFT_CHANNEL,
+} from "../ipc/channels.ts";
 import * as DesktopIpc from "../ipc/DesktopIpc.ts";
 import { DesktopWindow } from "../window/desktop-window.ts";
+import { presentableUrl } from "../window/present-url.ts";
 import type { RendererSource } from "./desktop-config.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
@@ -40,6 +50,11 @@ export type DesktopAppInput = {
   /** A deck the renderer opens at start. */
   readonly initialDeck: Option.Option<string>;
 };
+
+/** The renderer asked to present an address that is not a page of the deck the backend has open. */
+class PresentRefused extends Schema.TaggedError<PresentRefused>()("PresentRefused", {
+  url: Schema.String,
+}) {}
 
 /** Ask the user for a deck directory with the system dialog, over the main window when there is one. */
 const pickDeck = Effect.fn("desktop.pickDeck")(function* () {
@@ -118,6 +133,47 @@ export const program = Effect.fn("desktop.app")(function* (input: DesktopAppInpu
   );
 
   const desktopWindow = yield* DesktopWindow;
+  // Main asks the backend which deck is open; the renderer's word for it is never taken.
+  const present = Effect.fn("desktop.present")(function* (url: string) {
+    const openDeck = yield* openDeckUrl().pipe(
+      Effect.provideService(BackendAuth, auth),
+      Effect.provide(FetchHttpClient.layer)
+    );
+    return yield* Option.match(presentableUrl(url, openDeck), {
+      onNone: (): Effect.Effect<
+        void,
+        PresentRefused | OpenDeckUnknown | ElectronWindow.ElectronWindowCreateError
+      > => Effect.fail(new PresentRefused({ url })),
+      onSome: desktopWindow.present,
+    });
+  });
+  yield* ipc.handle(
+    DesktopIpc.makeIpcMethod({
+      channel: PRESENT_CHANNEL,
+      payload: Schema.String,
+      result: Schema.Undefined,
+      // Only a page of the open deck opens; anything else the renderer sends is refused.
+      handler: present,
+    })
+  );
+  yield* ipc.handle(
+    DesktopIpc.makeIpcMethod({
+      channel: UNSAVED_DRAFT_CHANNEL,
+      payload: Schema.Boolean,
+      result: Schema.Undefined,
+      handler: desktopWindow.recordUnsavedDraft,
+    })
+  );
+  // The page settled its draft after main held back a quit or a window close: go on.
+  yield* ipc.handle(
+    DesktopIpc.makeIpcMethod({
+      channel: LEAVE_CHANNEL,
+      payload: LeaveIntent,
+      result: Schema.Undefined,
+      handler: (intent) =>
+        desktopWindow.leave(intent).pipe(Effect.andThen(intent === "quit" ? electronApp.quit : Effect.void)),
+    })
+  );
   yield* desktopWindow.open;
   yield* shutdown.awaitRequest;
 }, Effect.scoped);

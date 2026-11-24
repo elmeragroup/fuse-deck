@@ -89,9 +89,9 @@ function label(state: StudioState): string {
     case "Opening":
       return `Opening ${path.basename(state.path)}`;
     case "Open":
-      return `Open ${state.deck.title} ${String(state.admitted)}`;
+      return `Open ${state.deck.title} ${String(state.admitted)}/${String(state.writing)}`;
     case "Closing":
-      return `Closing ${state.deck.title} ${String(state.admitted)}`;
+      return `Closing ${state.deck.title} ${String(state.admitted)}/${String(state.writing)}`;
   }
 }
 
@@ -139,7 +139,7 @@ describe("DeckScopes", () => {
       const a = yield* scopes.open(deckA, newRequestId());
       yield* scopes.open(deckB, newRequestId());
       const ran = yield* Ref.make(false);
-      const error = yield* Effect.flip(scopes.admit(a.scopeId, () => Ref.set(ran, true)));
+      const error = yield* Effect.flip(scopes.admit(a.scopeId, "Read", () => Ref.set(ran, true)));
       assert.strictEqual(error._tag, "StaleScope");
       assert.isFalse(yield* Ref.get(ran));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
@@ -152,7 +152,7 @@ describe("DeckScopes", () => {
       const orderB = [...(yield* readOrder(deckB))];
       const gate = yield* Deferred.make<void>();
       const reorder = yield* scopes
-        .admit(a.scopeId, ({ files }) =>
+        .admit(a.scopeId, "Write", ({ files }) =>
           Deferred.await(gate).pipe(
             Effect.andThen(files.moveSlide(slide("a-one"), { _tag: "After", anchor: slide("a-three") }))
           )
@@ -171,12 +171,44 @@ describe("DeckScopes", () => {
       assert.deepStrictEqual([...(yield* readOrder(deckB))], orderB);
       assert.strictEqual(b.title, "Deck B");
       const labels = (yield* Ref.get(seen)).map(label);
-      const from = labels.indexOf("Closing Deck A 1");
+      const from = labels.indexOf("Closing Deck A 1/1");
       assert.deepStrictEqual(labels.slice(from), [
-        "Closing Deck A 1",
-        "Closing Deck A 0",
+        "Closing Deck A 1/1",
+        "Closing Deck A 0/0",
         "Opening b",
-        "Open Deck B 0",
+        "Open Deck B 0/0",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+
+  it.live("counts an admitted write as writing, and an admitted read only as admitted", () =>
+    Effect.gen(function* () {
+      const { scopes, deckA, seen } = yield* setup(Duration.seconds(10));
+      const a = yield* scopes.open(deckA, newRequestId());
+      const readGate = yield* Deferred.make<void>();
+      const writeGate = yield* Deferred.make<void>();
+      const read = yield* scopes
+        .admit(a.scopeId, "Read", ({ files }) =>
+          Deferred.await(readGate).pipe(Effect.andThen(files.openSlide(slide("a-one"))))
+        )
+        .pipe(Effect.forkScoped);
+      yield* waitForState(scopes, (state) => state._tag === "Open" && state.admitted === 1);
+      const write = yield* scopes
+        .admit(a.scopeId, "Write", () => Deferred.await(writeGate))
+        .pipe(Effect.forkScoped);
+      yield* waitForState(scopes, (state) => state._tag === "Open" && state.admitted === 2);
+      yield* Deferred.succeed(writeGate, undefined);
+      yield* Fiber.join(write);
+      yield* Deferred.succeed(readGate, undefined);
+      yield* Fiber.join(read);
+      yield* waitForState(scopes, (state) => state._tag === "Open" && state.admitted === 0);
+      const labels = (yield* Ref.get(seen)).map(label);
+      assert.deepStrictEqual(labels.slice(labels.indexOf("Open Deck A 0/0")), [
+        "Open Deck A 0/0",
+        "Open Deck A 1/0",
+        "Open Deck A 2/1",
+        "Open Deck A 1/0",
+        "Open Deck A 0/0",
       ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
@@ -187,7 +219,7 @@ describe("DeckScopes", () => {
       const a = yield* scopes.open(deckA, newRequestId());
       const interrupted = yield* Deferred.make<void>();
       const stuck = yield* scopes
-        .admit(a.scopeId, () =>
+        .admit(a.scopeId, "Read", () =>
           Effect.never.pipe(Effect.onInterrupt(() => Deferred.succeed(interrupted, undefined)))
         )
         .pipe(Effect.forkScoped);
@@ -248,7 +280,7 @@ describe("DeckScopes", () => {
         Option.some("Opening")
       );
       const afterwards = yield* scopes.state.pipe(Stream.runHead);
-      assert.deepStrictEqual(afterwards, Option.some({ _tag: "Open", deck: a, admitted: 0 }));
+      assert.deepStrictEqual(afterwards, Option.some({ _tag: "Open", deck: a, admitted: 0, writing: 0 }));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 

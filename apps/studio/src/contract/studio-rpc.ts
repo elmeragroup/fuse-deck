@@ -3,6 +3,10 @@
  * WebSocket. The backend and the renderer both import this module, so it imports only Schema,
  * `effect/rpc` and deck-core's slide id, none of which reaches Node.
  *
+ * A slide's source is opened with the revision of its bytes, and saved over that revision: a save
+ * of a slide that changed on disk since fails with deck-core's `SlideConflict`, which carries what
+ * the file holds now.
+ *
  * Every call about an open deck carries the scope id that `deck.open` returned. The backend
  * resolves that id once, before it does anything, and fails with `StaleScope` when the deck it
  * names is closing or gone.
@@ -12,6 +16,12 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Schema from "effect/Schema";
 
+import {
+  OpenedSlide,
+  SavedSlide,
+  SlideConflict,
+  SlideRevision,
+} from "@elmeragroup/deck-core/deck/slide-edit";
 import { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
 
 /** The id of one opening of a deck. A deck opened twice gets two ids. */
@@ -54,13 +64,16 @@ export const StudioState = Schema.Union([
   }),
   /** A deck at `path` is opening, for the request `requestId`. */
   Schema.TaggedStruct("Opening", { path: Schema.String, requestId: OpenRequestId }),
-  /** `deck` is open, with `admitted` calls about it still running. */
-  Schema.TaggedStruct("Open", { deck: OpenDeck, admitted: Schema.Int }),
   /**
-   * `deck` is closing: it takes no new calls, and the next deck opens once its `admitted` calls
-   * have settled or been cancelled.
+   * `deck` is open, with `admitted` calls about it still running. `writing` of them write to the
+   * deck; the rest only read it.
    */
-  Schema.TaggedStruct("Closing", { deck: OpenDeck, admitted: Schema.Int }),
+  Schema.TaggedStruct("Open", { deck: OpenDeck, admitted: Schema.Int, writing: Schema.Int }),
+  /**
+   * `deck` is closing: it takes no new calls, and the next deck opens once its `admitted` calls,
+   * `writing` of them writes, have settled or been cancelled.
+   */
+  Schema.TaggedStruct("Closing", { deck: OpenDeck, admitted: Schema.Int, writing: Schema.Int }),
 ]);
 
 /** Where the backend's deck stands. */
@@ -143,6 +156,22 @@ export class StudioRpcs extends RpcGroup.make(
     payload: { ...ScopePayload, id: SlideId, position: MovePosition },
     success: Schema.Array(SlideId),
     error: Schema.Union([StaleScope, DeckOperationFailed]),
+  }),
+  Rpc.make("slide.open", {
+    payload: { ...ScopePayload, id: SlideId },
+    success: OpenedSlide,
+    error: Schema.Union([StaleScope, DeckOperationFailed]),
+  }),
+  Rpc.make("slide.save", {
+    payload: {
+      ...ScopePayload,
+      id: SlideId,
+      /** The revision the editor opened, or null when it expects no file. */
+      expected: Schema.NullOr(SlideRevision),
+      source: Schema.String,
+    },
+    success: SavedSlide,
+    error: Schema.Union([StaleScope, SlideConflict, DeckOperationFailed]),
   }),
   Rpc.make("recent.list", { success: Schema.Array(RecentDeck) })
 ) {}

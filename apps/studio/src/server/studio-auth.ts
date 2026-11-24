@@ -51,6 +51,8 @@ export class StudioAuth extends Context.Service<
     readonly issueTicket: (
       bearer: Redacted.Redacted<string>
     ) => Effect.Effect<IssuedTicket, CredentialRefused>;
+    /** Accept a session bearer, or refuse an unknown one. */
+    readonly checkBearer: (bearer: Redacted.Redacted<string>) => Effect.Effect<void, CredentialRefused>;
     /** Spend a ticket on one WebSocket upgrade. */
     readonly redeemTicket: (ticket: Redacted.Redacted<string>) => Effect.Effect<void, CredentialRefused>;
   }
@@ -87,12 +89,18 @@ export class StudioAuth extends Context.Service<
           return bearer;
         });
 
-        const issueTicket = Effect.fn("StudioAuth.issueTicket")(function* (
+        const checkBearer = Effect.fn("StudioAuth.checkBearer")(function* (
           bearer: Redacted.Redacted<string>
         ) {
           if (!(yield* Ref.get(bearers)).has(hash(bearer))) {
             return yield* new CredentialRefused({ credential: "bearer", reason: "unknown" });
           }
+        });
+
+        const issueTicket = Effect.fn("StudioAuth.issueTicket")(function* (
+          bearer: Redacted.Redacted<string>
+        ) {
+          yield* checkBearer(bearer);
           const now = yield* Clock.currentTimeMillis;
           const lifetime = Duration.toMillis(TICKET_LIFETIME);
           const ticket = yield* newSecret;
@@ -123,7 +131,7 @@ export class StudioAuth extends Context.Service<
           }
         });
 
-        return StudioAuth.of({ exchangeBootstrap, issueTicket, redeemTicket });
+        return StudioAuth.of({ exchangeBootstrap, checkBearer, issueTicket, redeemTicket });
       })
     );
 }

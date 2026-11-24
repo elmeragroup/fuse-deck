@@ -8,10 +8,16 @@
  * `FUSE_DECK_STUDIO_DECK` naming the deck. It checks that the studio backend runs on the app's own
  * executable, that the window frames the deck from 127.0.0.1 under the page's
  * Content-Security-Policy, that the frame renders the slide and its Fuse Button, and that the
- * sidebar marks the slide current. Then it kills the backend, and checks that the app starts a new
- * one and the window reconnects to it and frames the deck again from the new run's dev server.
- * Last it quits the app as a user does, through `app.quit()`, and checks that the app exited 0 and
- * the backend is gone.
+ * sidebar marks the slide current. Then it types an unsaved draft into the Source tab, kills the
+ * backend, and checks that the app starts a new one, the window reconnects to it and frames the
+ * deck again from the new run's dev server, and the draft is still there.
+ * Then it asks main to present a page on another 127.0.0.1 port and checks that main refuses it and
+ * opens no window. It shows the second slide, presses Present, and checks that a fullscreen window
+ * without the preload opens on the deck at that slide, and that Escape closes it.
+ * Last it closes the window, which asks about the draft, and Cancel keeps it open. Then it quits the
+ * app as a user does, through `app.quit()`. The page asks again: Cancel keeps the app running, and
+ * Save on a second quit writes the draft. It checks that the
+ * app exited 0 and the backend is gone.
  *
  * Usage: node scripts/packaged-smoke.ts (after `package`)
  */
@@ -24,10 +30,11 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import type { ChildProcess as NodeChildProcess } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { _electron } from "playwright";
-import type { Page } from "playwright";
+import type { ElectronApplication, Page } from "playwright";
 
 /** One step of the smoke test failed. */
 class SmokeFailed extends Schema.TaggedError<SmokeFailed>()("SmokeFailed", {
@@ -53,6 +60,11 @@ const BACKEND_ENTRY = path.join(
 /** The fixture deck's title, which names the preview frame. */
 const DECK_TITLE = "Studio smoke";
 const PREVIEW = `iframe[title="${DECK_TITLE} preview"]`;
+
+/** The draft the smoke test types into the first slide's source and saves when it quits. */
+const DRAFT =
+  'import { Button } from "@elmeragroup/fuse/button";\n\n# Intro\n\nTyped in the smoke test.\n\n<Button>Ask</Button>\n';
+const SOURCE_EDITOR = "Source of slides/intro.mdx";
 
 /** Run a command to completion and return its stdout; a non-zero exit fails. */
 const run = Effect.fn("run")(function* (command: string, args: readonly string[]) {
@@ -210,6 +222,11 @@ const smoke = Effect.gen(function* () {
   }
   yield* Console.log(`The backend is pid ${String(backend.pid)}: ${backend.command}`);
 
+  yield* Effect.tryPromise({
+    try: () => typeDraft(window),
+    catch: (cause) => new SmokeFailed({ message: `The Source tab did not take a draft: ${String(cause)}` }),
+  });
+
   // A crashed backend: main starts another, exchanges its bootstrap credential, and the window
   // reconnects with the new bearer and opens the deck again.
   yield* Effect.sync(() => killIfAlive(backend.pid));
@@ -235,12 +252,46 @@ const smoke = Effect.gen(function* () {
   yield* Console.log(
     `After killing pid ${String(backend.pid)}, backend pid ${String(replacement.pid)} serves the deck again at ${restarted}`
   );
+  const kept = yield* Effect.promise(() =>
+    window.getByRole("textbox", { name: SOURCE_EDITOR, includeHidden: true }).inputValue()
+  );
+  if (kept !== DRAFT) {
+    return yield* new SmokeFailed({
+      message: `The unsaved draft did not survive the backend restart; the editor holds:\n${kept}`,
+    });
+  }
+  // The Preview tab shows, so the editor is hidden but holds its text.
+  yield* Console.log("The unsaved draft survived the backend restart");
+
+  const refused = yield* Effect.tryPromise({
+    try: () => presentAnotherPort(electronApp, window, restarted),
+    catch: (cause) => new SmokeFailed({ message: `Present did not refuse another port: ${String(cause)}` }),
+  });
+  yield* Console.log(`Main refused to present ${refused}`);
+
+  const presented = yield* Effect.tryPromise({
+    try: () => present(electronApp, window),
+    catch: (cause) =>
+      new SmokeFailed({
+        message: `Present did not work: ${String(cause)}\n[window errors]\n${windowErrors.join("\n")}\n[app output]\n${output.join("")}`,
+      }),
+  });
+  yield* Console.log(`Present opened ${presented} fullscreen, and Escape closed it`);
 
   yield* Effect.tryPromise({
-    try: () => electronApp.close(),
-    catch: (cause) => new SmokeFailed({ message: `The app did not quit: ${String(cause)}` }),
+    try: () => quitWithDraft(electronApp, window, main),
+    catch: (cause) =>
+      new SmokeFailed({
+        message: `The quit did not ask about the draft: ${String(cause)}\n[app output]\n${output.join("")}`,
+      }),
   });
   const exit = yield* Effect.promise(() => exited);
+  const written = yield* fs.readFileString(path.join(deck, "slides", "intro.mdx"));
+  if (written !== DRAFT) {
+    return yield* new SmokeFailed({
+      message: `Save on quit did not write the draft; the slide holds:\n${written}`,
+    });
+  }
   yield* Console.log(`[app output]\n${output.join("")}`);
   if (exit.code !== 0 || exit.signal !== null) {
     return yield* new SmokeFailed({
@@ -260,7 +311,7 @@ const smoke = Effect.gen(function* () {
     return yield* new SmokeFailed({ message: "The app did not report the backend's exit on quit." });
   }
   yield* Console.log(
-    "Packaged smoke passed: the copied app started with a bare PATH, ran the studio backend on its own executable, framed the deck from 127.0.0.1, rendered the slide's Fuse Button, recovered from a killed backend, and quit with exit 0 after its backend exited."
+    "Packaged smoke passed: the copied app started with a bare PATH, ran the studio backend on its own executable, framed the deck from 127.0.0.1, rendered the slide's Fuse Button, recovered from a killed backend with the unsaved draft kept, refused to present another port, presented the current slide fullscreen and left on Escape, asked about the draft on quit, saved it, and quit with exit 0 after its backend exited."
   );
 }).pipe(Effect.scoped);
 
@@ -313,6 +364,136 @@ async function renderSlide(window: Page, previous: string | null): Promise<strin
     throw new Error("The deck frame has no src.");
   }
   return src;
+}
+
+/**
+ * Show the second slide, press Present, and check the window it opens: fullscreen, on the deck's
+ * 127.0.0.1 page at that slide, with no preload bridge. Then press Escape and wait for it to close.
+ *
+ * @returns The Present window's address.
+ */
+async function present(electronApp: ElectronApplication, window: Page): Promise<string> {
+  await window.getByRole("button", { name: "Outro" }).click();
+  await window
+    .getByRole("button", { name: "Outro" })
+    .and(window.locator('[aria-current="true"]'))
+    .waitFor({ timeout: 30_000 });
+  const opened = electronApp.waitForEvent("window", { timeout: 30_000 });
+  await window.getByRole("button", { name: "Present" }).click();
+  const presented = await opened;
+  await presented.getByRole("region", { name: "Outro" }).waitFor({ timeout: 60_000 });
+  const url = new URL(presented.url());
+  if (url.hostname !== "127.0.0.1" || url.hash !== "#/outro") {
+    throw new Error(`Present opened ${url.href}, not the deck at #/outro.`);
+  }
+  if ((await presented.evaluate("typeof window.fuseDeckStudio")) !== "undefined") {
+    throw new Error("The Present window has the studio's preload bridge.");
+  }
+  // macOS animates into fullscreen; wait until the window is there.
+  const deadline = Date.now() + 15_000;
+  while (!(await presentedIsFullScreen(electronApp))) {
+    if (Date.now() > deadline) {
+      throw new Error("The Present window never went fullscreen.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const closed = presented.waitForEvent("close", { timeout: 15_000 });
+  // Through Electron's input pipeline, as a key press arrives; Playwright's own key events skip
+  // `before-input-event`.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    for (const each of BrowserWindow.getAllWindows()) {
+      if (each.isFullScreen()) {
+        each.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" });
+        each.webContents.sendInputEvent({ type: "keyUp", keyCode: "Escape" });
+      }
+    }
+  });
+  await closed;
+  return url.href;
+}
+
+/** Type `DRAFT` into the first slide's source, unsaved, and go back to the preview. */
+async function typeDraft(window: Page): Promise<void> {
+  await window.getByRole("tab", { name: "Source" }).click();
+  const editor = window.getByRole("textbox", { name: SOURCE_EDITOR });
+  await editor.waitFor({ timeout: 30_000 });
+  await editor.fill(DRAFT);
+  await window.getByText("Unsaved changes").waitFor({ timeout: 10_000 });
+  await window.getByRole("tab", { name: "Preview" }).click();
+}
+
+/**
+ * Ask main, through the page's own bridge, to present a page on the deck host's next port. Main
+ * must refuse it and open no window.
+ *
+ * @param deckUrl - The open deck's address.
+ * @returns The address main refused.
+ */
+async function presentAnotherPort(
+  electronApp: ElectronApplication,
+  window: Page,
+  deckUrl: string
+): Promise<string> {
+  const other = new URL(deckUrl);
+  other.port = String(Number(other.port) + 1);
+  const outcome = await window.evaluate(
+    `window.fuseDeckStudio.present(${JSON.stringify(other.href)}).then(() => "opened", () => "refused")`
+  );
+  // Long enough for a window main had opened to register.
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  const windows = await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+  if (outcome !== "refused" || windows !== 1) {
+    throw new Error(`Present of ${other.href} ended ${String(outcome)}, with ${String(windows)} windows.`);
+  }
+  return other.href;
+}
+
+/**
+ * Close the window, then quit, while the draft is unsaved. The page asks each time. Cancel keeps the
+ * window and the app; a second quit answered with Save writes the draft and quits.
+ */
+async function quitWithDraft(
+  electronApp: ElectronApplication,
+  window: Page,
+  main: NodeChildProcess
+): Promise<void> {
+  const dialog = window.getByRole("dialog", { name: "Save your changes to slides/intro.mdx?" });
+  // Closing the window asks too, and Cancel keeps it.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    for (const each of BrowserWindow.getAllWindows()) {
+      each.close();
+    }
+  });
+  await dialog.waitFor({ timeout: 30_000 });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.waitFor({ state: "detached", timeout: 10_000 });
+  const open = await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+  if (open !== 1) {
+    throw new Error(`Cancel on the window's close left ${String(open)} windows open.`);
+  }
+  await electronApp.evaluate(({ app }) => {
+    app.quit();
+  });
+  await dialog.waitFor({ timeout: 30_000 });
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.waitFor({ state: "detached", timeout: 10_000 });
+  // Long enough for a quit that went on anyway to end the process.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  if (main.exitCode !== null || main.signalCode !== null) {
+    throw new Error("The app quit although the user cancelled.");
+  }
+  await electronApp.evaluate(({ app }) => {
+    app.quit();
+  });
+  await dialog.getByRole("button", { name: "Save", exact: true }).click({ timeout: 30_000 });
+}
+
+/** Whether a window other than the main one is fullscreen. */
+async function presentedIsFullScreen(electronApp: ElectronApplication): Promise<boolean> {
+  const fullscreen = await electronApp.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows().map((each) => each.isFullScreen())
+  );
+  return fullscreen.filter(Boolean).length === 1;
 }
 
 smoke.pipe(Effect.provide(NodeServices.layer), NodeRuntime.runMain);

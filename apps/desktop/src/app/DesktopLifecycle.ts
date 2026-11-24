@@ -1,7 +1,9 @@
 // Derived from pingdotgg/t3code apps/desktop/src/app/DesktopLifecycle.ts at 2fe7febc.
 // MIT licence, Copyright (c) 2026 T3 Tools Inc. See THIRD_PARTY_NOTICES.md.
 // Changes: drops relaunch, the theme and updater hooks, the window-bounds flush and the Linux
-// child and AppImage cleanup; logs through Effect's logger in place of DesktopObservability.
+// child and AppImage cleanup; logs through Effect's logger in place of DesktopObservability; a quit
+// while the page reports an unsaved draft first asks the page, which quits again once it is settled;
+// a signal quits without asking.
 
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -143,10 +145,35 @@ function handleBeforeQuit(
     void runEffect(exitIfShutdownStalled(quit, "before-quit"));
     return;
   }
+  // A page with an unsaved draft asks the user first; the quit stays "running" until the page
+  // answers through the leave channel, which quits again. A cancelled quit leaves nothing behind.
+  void runEffect(
+    Effect.gen(function* () {
+      const desktopWindow = yield* DesktopWindow;
+      return yield* desktopWindow.askToLeave("quit");
+    }),
+  ).then((asked) => {
+    if (!asked) {
+      shutDownAndQuit(runEffect, quit);
+    }
+  });
+}
+
+function shutDownAndQuit(
+  runEffect: <A, E>(
+    effect: Effect.Effect<A, E, DesktopLifecycleRegistrationServices>,
+  ) => Promise<A>,
+  quit: QuitState,
+): void {
+  // A second before-quit while the page was asked may have started the shutdown already.
+  if (quit.phase !== "running") {
+    return;
+  }
   void runEffect(
     Effect.gen(function* () {
       const state = yield* DesktopState.DesktopState;
       const electronWindow = yield* ElectronWindow.ElectronWindow;
+      yield* (yield* DesktopWindow).releaseForQuit;
       yield* startWaitingForShutdown(quit);
       yield* Ref.set(state.quitting, true);
       yield* logLifecycleInfo("before-quit received");
@@ -187,6 +214,8 @@ function quitFromSignal(
       const state = yield* DesktopState.DesktopState;
       const wasQuitting = yield* Ref.getAndSet(state.quitting, true);
       if (wasQuitting) return;
+      // A signal never asks about a draft, so Electron's close of the windows must go through.
+      yield* (yield* DesktopWindow).releaseForQuit;
       yield* startWaitingForShutdown(quit);
       yield* logLifecycleInfo("process signal received", { signal });
       yield* requestDesktopShutdownAndWait();

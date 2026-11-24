@@ -108,6 +108,17 @@ function notInDeck(id: SlideId): SlideNotInDeck {
 }
 
 /**
+ * Check that the order names a slide.
+ *
+ * @param manifest - The deck's manifest.
+ * @param id - The slide.
+ * @returns Success when the order names `id`, or `SlideNotInDeck`.
+ */
+export function requireSlide(manifest: DeckManifest, id: SlideId): Result.Result<void, SlideNotInDeck> {
+  return manifest.order.includes(id) ? Result.void : Result.fail(notInDeck(id));
+}
+
+/**
  * The order with `id` placed at `position`. `order` must not hold `id`.
  */
 function place(

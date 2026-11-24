@@ -9,7 +9,9 @@
  * that; then its dev server stops, and only then does the next deck open. A call names its scope
  * by id and is admitted or refused before it does anything, so a call meant for the old deck can
  * never run against the new one. The admitted calls are the fibers in the scope's set: the drain
- * waits for that set, and the published count is its size.
+ * waits for that set, and the published count is its size. Each call is admitted as a read or a
+ * write; the writes are in a second set too, so the state counts them apart and the renderer reports
+ * saves without reporting reads.
  */
 
 import * as Cause from "effect/Cause";
@@ -57,16 +59,21 @@ export type ScopedDeck = {
   readonly bundler: Bundler["Service"];
 };
 
+/** What an admitted call does to the deck: reads it, or writes to it. */
+export type AdmittedCall = "Read" | "Write";
+
 /** One opening of a deck, while it is open or closing. */
 type LiveScope = ScopedDeck & {
   readonly scope: Scope.Closeable;
   /** The admitted calls that have not settled. */
   readonly work: FiberSet.FiberSet<unknown, unknown>;
+  /** The admitted writes that have not settled, each also in `work`. */
+  readonly writes: FiberSet.FiberSet<unknown, unknown>;
   readonly changes: PubSub.PubSub<DeckChanged>;
   /** Set once, when the scope starts closing; from then on it admits nothing. */
   closing: boolean;
   /** What this scope last published, so each change publishes once. */
-  published: { readonly closing: boolean; readonly admitted: number } | undefined;
+  published: { readonly closing: boolean; readonly admitted: number; readonly writing: number } | undefined;
 };
 
 /** The deck's listener could not start on 127.0.0.1. */
@@ -98,12 +105,16 @@ export class DeckScopes extends Context.Service<
     readonly close: (scopeId: ScopeId) => Effect.Effect<void, StaleScope>;
     /**
      * Run `work` against the deck `scopeId` names, or fail with `StaleScope` before it starts when
-     * that deck is closing or gone. Admitted work keeps the deck open until it settles.
+     * that deck is closing or gone. Admitted work keeps the deck open until it settles. `call`
+     * says whether the work writes to the deck, which the published state counts.
      */
     readonly admit: <A, E>(
       scopeId: ScopeId,
+      call: AdmittedCall,
       work: (deck: ScopedDeck) => Effect.Effect<A, E>
     ) => Effect.Effect<A, E | StaleScope>;
+    /** The address of the deck that is open and admitting calls; none while none is, or it closes. */
+    readonly openUrl: Effect.Effect<Option.Option<string>>;
     /** The open deck's file changes, until it closes. */
     readonly changes: (scopeId: ScopeId) => Stream.Stream<DeckChanged, StaleScope>;
   }
@@ -134,16 +145,22 @@ export class DeckScopes extends Context.Service<
                 return;
               }
               const admitted = yield* FiberSet.size(live.work);
+              const writing = yield* FiberSet.size(live.writes);
               const { closing } = live;
-              if (live.published?.closing === closing && live.published.admitted === admitted) {
+              const { published } = live;
+              if (
+                published?.closing === closing &&
+                published.admitted === admitted &&
+                published.writing === writing
+              ) {
                 return;
               }
-              live.published = { closing, admitted };
+              live.published = { closing, admitted, writing };
               yield* SubscriptionRef.set(
                 state,
                 closing
-                  ? { _tag: "Closing", deck: live.deck, admitted }
-                  : { _tag: "Open", deck: live.deck, admitted }
+                  ? { _tag: "Closing", deck: live.deck, admitted, writing }
+                  : { _tag: "Open", deck: live.deck, admitted, writing }
               );
             })
           );
@@ -200,6 +217,7 @@ export class DeckScopes extends Context.Service<
             .dev({ _tag: "Embedded", embedder: { origin: config.embedderOrigin, scopeId }, listener })
             .pipe(Scope.provide(scope));
           const work = yield* FiberSet.make<unknown, unknown>().pipe(Scope.provide(scope));
+          const writes = yield* FiberSet.make<unknown, unknown>().pipe(Scope.provide(scope));
           const changes = yield* PubSub.unbounded<DeckChanged>();
           yield* Scope.addFinalizer(scope, PubSub.shutdown(changes));
           yield* server.changes.pipe(
@@ -215,6 +233,7 @@ export class DeckScopes extends Context.Service<
             bundler,
             scope,
             work,
+            writes,
             changes,
             closing: false,
             published: undefined,
@@ -280,7 +299,11 @@ export class DeckScopes extends Context.Service<
          * between them, so a scope that starts closing either refused the call or waits for it.
          * The work itself yields as usual and stays interruptible, so a drain timeout cancels it.
          */
-        const register = <A, E>(scopeId: ScopeId, work: (deck: ScopedDeck) => Effect.Effect<A, E>) =>
+        const register = <A, E>(
+          scopeId: ScopeId,
+          call: AdmittedCall,
+          work: (deck: ScopedDeck) => Effect.Effect<A, E>
+        ) =>
           Effect.suspend(() => {
             const live = admitting(scopeId);
             return live === undefined
@@ -291,16 +314,23 @@ export class DeckScopes extends Context.Service<
                     Effect.interruptible,
                     Effect.provideService(Scheduler.PreventSchedulerYield, false)
                   )
-                ).pipe(Effect.map((fiber) => ({ live, fiber })));
+                ).pipe(
+                  Effect.tap((fiber) => (call === "Write" ? FiberSet.add(live.writes, fiber) : Effect.void)),
+                  Effect.map((fiber) => ({ live, fiber }))
+                );
           }).pipe(Effect.provideService(Scheduler.PreventSchedulerYield, true));
 
-        const admit = <A, E>(scopeId: ScopeId, work: (deck: ScopedDeck) => Effect.Effect<A, E>) =>
+        const admit = <A, E>(
+          scopeId: ScopeId,
+          call: AdmittedCall,
+          work: (deck: ScopedDeck) => Effect.Effect<A, E>
+        ) =>
           // Uninterruptible from the check through the registration and the watch on the fiber,
           // so an interrupted caller leaves no admitted call uncounted or unpublished. A caller
           // interrupted while it waits only stops waiting; the call runs on until it settles.
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {
-              const { live, fiber } = yield* register(scopeId, work);
+              const { live, fiber } = yield* register(scopeId, call, work);
               // The set drops the fiber as it exits, before this watch resumes, so the publish
               // counts it out.
               yield* Fiber.await(fiber).pipe(
@@ -337,6 +367,9 @@ export class DeckScopes extends Context.Service<
           open,
           close,
           admit,
+          openUrl: Effect.sync(() =>
+            current === undefined || current.closing ? Option.none() : Option.some(current.deck.url)
+          ),
           changes,
         });
       })

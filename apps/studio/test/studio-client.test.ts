@@ -119,6 +119,10 @@ describe("the studio client", () => {
       connection: Effect.suspend(() => Effect.succeed(connection)),
       pickDeck: Effect.succeedNone,
       initialDeck: Effect.succeedSome(deckA),
+      present: () => Effect.void,
+      reportUnsavedDraft: () => Effect.void,
+      onLeaveRequest: () => () => undefined,
+      leave: () => Effect.void,
     };
     const client = startStudioClient(host);
     await snapshotWhere(client, (snapshot) => {
