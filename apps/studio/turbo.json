@@ -1,6 +1,10 @@
 {
   "extends": ["//"],
   "tasks": {
+    // The build copies fuse-deck's skill into dist/skill, for the describe tool.
+    "build": {
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/packages/fuse-deck/skill/SKILL.md"]
+    },
     // The unit tests spawn the built backend, and the agent tests start the mock agent with the
     // runner's PATH; the backend reads PATH and SHELL for the agent it launches.
     "test": {

@@ -1,7 +1,8 @@
 import * as Schema from "effect/Schema";
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingHttpHeaders, Server } from "node:http";
 import { createRequire } from "node:module";
@@ -64,8 +65,9 @@ afterEach(async () => {
 });
 
 /** The relay, started as an agent starts it, with a PATH that finds nothing. */
-function startRelay(env: Readonly<Record<string, string>>, entry = RELAY) {
+function startRelay(env: Readonly<Record<string, string>>, entry = RELAY, cwd = process.cwd()) {
   const child: ChildProcessWithoutNullStreams = spawn(process.execPath, [entry], {
+    cwd,
     env: { PATH: "", ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -211,6 +213,44 @@ describe("the MCP relay", () => {
       expect(Schema.decodeSync(Message)(line).result).toEqual({ protocolVersion: "2025-11-25" });
     } finally {
       await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("starts in a deck's directory without loading the deck's own modules", async () => {
+    // An agent may start its MCP servers in any directory, the deck included. A deck that ships
+    // its own `effect` must not reach the relay, which resolves from its own location.
+    const deck = await mkdtemp(path.join(tmpdir(), "fuse-deck-relay-deck-"));
+    try {
+      const marker = path.join(deck, "ran.txt");
+      const trap = `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`;
+      await mkdir(path.join(deck, "node_modules", "effect"), { recursive: true });
+      await writeFile(
+        path.join(deck, "node_modules", "effect", "package.json"),
+        JSON.stringify({
+          name: "effect",
+          version: "9.9.9",
+          main: "index.js",
+          exports: { "./*": "./index.js" },
+        })
+      );
+      await writeFile(path.join(deck, "node_modules", "effect", "index.js"), trap);
+      const backend = await mockBackend(() => ({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-11-25" } }),
+      }));
+      const relay = startRelay(
+        { FUSE_DECK_MCP_ENDPOINT: backend.endpoint, FUSE_DECK_MCP_AUTHORIZATION: "Bearer token" },
+        RELAY,
+        deck
+      );
+      relay.send(INITIALIZE);
+      const [line = ""] = await relay.linesAfter(1);
+      expect(await relay.end()).toBe(0);
+      expect(Schema.decodeSync(Message)(line).result).toEqual({ protocolVersion: "2025-11-25" });
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      await rm(deck, { recursive: true, force: true });
     }
   });
 

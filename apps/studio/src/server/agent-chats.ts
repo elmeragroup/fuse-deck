@@ -35,8 +35,9 @@
  * session and deck. The token is in the relay's environment only, never the agent's own, and the
  * protocol log writes it as `<mcp-token>`. It is revoked as the session's scope closes, so a failed
  * setup, the agent's exit, a closed connection and the deck's close all revoke it; Stop does not.
- * The tool calls a session makes run in the chat: Stop interrupts the running ones and refuses new
- * ones until the turn ends, and the turn ends only once they have settled.
+ * The tool calls a session makes run in the chat, and only from the moment a turn's prompt goes out
+ * until Stop or the turn's end: Stop interrupts the running ones and refuses new ones, and the turn
+ * ends only once they have settled, refusing new ones while it waits.
  */
 
 import * as Context from "effect/Context";
@@ -205,8 +206,9 @@ export type AgentChat = {
   /** End the agent and close the chat; the deck is closing. */
   readonly end: Effect.Effect<void>;
   /**
-   * Run a deck tool call the session `sessionKey` made, unless that session ended or Stop is
-   * under way. Stop interrupts it, and the turn ends only once it has settled.
+   * Run a deck tool call the session `sessionKey` made, while a turn runs: not after that session
+   * ended, during Stop, or between turns. Stop interrupts it, and the turn ends only once it has
+   * settled.
    */
   readonly toolCall: <A, E, R>(
     sessionKey: string,
@@ -286,6 +288,17 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
   let turnCount = 0;
   // Whether the running turn's prompt went out; before then, Stop cancels the turn's own fiber.
   let prompted = false;
+  // Whether the session's deck tool calls are admitted: from the prompt's dispatch until Stop or
+  // the turn's end. It changes only under `admission`, which a call holds while it is checked and
+  // registered in `toolCalls`, so Stop and the turn's end either precede a call or cancel it. A
+  // lock of its own: `end` and Stop hold `turns` while they wait for the turn's fiber to end.
+  const admission = yield* Semaphore.make(1);
+  let admitting = false;
+  const closeAdmission = admission.withPermits(1)(
+    Effect.sync(() => {
+      admitting = false;
+    })
+  );
   let entryCount = 0;
   const nextId = () => {
     entryCount += 1;
@@ -600,7 +613,12 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
       const { text } = input;
       const session = yield* ensureSession;
       const blocks = yield* promptBlocks(text, view, session.embeddedContext);
-      prompted = true;
+      yield* admission.withPermits(1)(
+        Effect.sync(() => {
+          prompted = true;
+          admitting = true;
+        })
+      );
       const response = yield* session.acp.agent.prompt({ sessionId: session.sessionId, prompt: blocks }).pipe(
         Effect.mapError((error) => new AgentStartFailed({ message: error.message })),
         Effect.raceFirst(
@@ -621,6 +639,8 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
     // Without the turn lock: `end` holds it while it interrupts this fiber.
     Effect.ensuring(
       Effect.gen(function* () {
+        // No call starts while the turn drains the ones it admitted.
+        yield* closeAdmission;
         yield* withdrawAll("The turn ended.");
         // Source unlocks only once no deck tool call of the turn can still write.
         yield* FiberSet.awaitEmpty(toolCalls);
@@ -661,6 +681,8 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
       if (!stopping) {
         return;
       }
+      yield* closeAdmission;
+      yield* FiberSet.clear(toolCalls);
       const session = live;
       if (session === undefined || !prompted) {
         // Still reading the deck or starting the agent: the turn's fiber is interrupted, which
@@ -671,7 +693,6 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
       }
       yield* session.acp.agent.cancel({ sessionId: session.sessionId }).pipe(Effect.ignore);
       yield* withdrawAll("Stopped.");
-      yield* FiberSet.clear(toolCalls);
       const overdue = Effect.gen(function* () {
         if ((yield* SubscriptionRef.get(state)).turn === "Stopping") {
           yield* endSession(
@@ -725,19 +746,32 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
   yield* Effect.addFinalizer(() => end);
 
   const toolCall = Effect.fnUntraced(function* <A, E, R>(sessionKey: string, call: Effect.Effect<A, E, R>) {
-    const session = live;
-    const current = yield* SubscriptionRef.get(state);
-    if (
-      session === undefined ||
-      Option.getOrUndefined(session.mcpSession) !== sessionKey ||
-      (yield* Deferred.isDone(closed))
-    ) {
-      return yield* new ToolCallRefused({ message: "The agent session that made this call has ended." });
-    }
-    if (current.turn === "Stopping") {
-      return yield* new ToolCallRefused({ message: "The user stopped the turn." });
-    }
-    const fiber = yield* FiberSet.run(toolCalls, call);
+    // Admitted and registered under the admission lock, so Stop and the turn's end run wholly
+    // before or after it.
+    const fiber = yield* admission.withPermits(1)(
+      Effect.gen(function* () {
+        const session = live;
+        const current = yield* SubscriptionRef.get(state);
+        if (
+          session === undefined ||
+          Option.getOrUndefined(session.mcpSession) !== sessionKey ||
+          (yield* Deferred.isDone(closed))
+        ) {
+          return yield* new ToolCallRefused({ message: "The agent session that made this call has ended." });
+        }
+        if (current.turn === "Stopping") {
+          return yield* new ToolCallRefused({ message: "The user stopped the turn." });
+        }
+        // A call belongs to the turn whose prompt went out; before then and once it ended, Source
+        // may be editable, or the turn's snapshot not taken.
+        if (current.turn !== "Running" || !admitting) {
+          return yield* new ToolCallRefused({
+            message: "No turn is running, so the agent may not use the deck tools.",
+          });
+        }
+        return yield* FiberSet.run(toolCalls, call);
+      })
+    );
     return yield* Fiber.join(fiber).pipe(Effect.onInterrupt(() => Fiber.interrupt(fiber)));
   });
 

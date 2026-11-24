@@ -11,7 +11,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ChatState } from "../src/contract/agent-chat.ts";
-import { DECK_PATH, SESSION_PATH, SessionResponse, TICKET_PATH } from "../src/contract/studio-launch.ts";
+import {
+  DECK_PATH,
+  SESSION_PATH,
+  SessionResponse,
+  SOCKET_PATH,
+  TICKET_PATH,
+} from "../src/contract/studio-launch.ts";
 import { OpenRequestId } from "../src/contract/studio-rpc.ts";
 import type { ScopeId } from "../src/contract/studio-rpc.ts";
 import { writeMockSettings } from "./agent.ts";
@@ -111,14 +117,12 @@ function post(
 
 const ToolCallResponse = Schema.fromJsonString(
   Schema.Struct({
-    result: Schema.Struct({
-      isError: Schema.optionalKey(Schema.Boolean),
-      structuredContent: Schema.optionalKey(Schema.Unknown),
-    }),
+    result: Schema.optionalKey(Schema.Unknown),
+    error: Schema.optionalKey(Schema.Struct({ code: Schema.Finite, message: Schema.String })),
   })
 );
 
-/** Initialize an MCP session with `credential`, call `tool`, and return its result. */
+/** Initialize an MCP session with `credential`, call `tool`, and return the JSON-RPC answer. */
 async function callTool(credential: SessionCredential, tool: string, args: JsonRpcMessage) {
   const auth = { authorization: credential.authorization };
   const initialized = await post(credential.endpoint, auth, INITIALIZE);
@@ -134,7 +138,7 @@ async function callTool(credential: SessionCredential, tool: string, args: JsonR
     method: "tools/call",
     params: { name: tool, arguments: args },
   });
-  return Schema.decodeSync(ToolCallResponse)(await called.text()).result;
+  return Schema.decodeSync(ToolCallResponse)(await called.text());
 }
 
 /** The status `/mcp` answers an initialize with `credential`. */
@@ -346,16 +350,21 @@ describe("the studio's deck tools at /mcp", () => {
       headers: { authorization: credential.authorization },
     });
     expect(deck.status).toBe(401);
+    // Nor is it a WebSocket ticket.
+    const socket = new URL(SOCKET_PATH, running.url);
+    socket.searchParams.set("ticket", credential.authorization.slice("Bearer ".length));
+    const upgrade = await fetch(socket, { headers: { origin: ORIGIN } });
+    expect(upgrade.status).toBe(401);
   });
 
   it("revokes a deck's token when the studio switches decks, and the next deck's token reaches only that deck", async () => {
     const { deckA, deckB, log, running, bearer } = await setup();
-    await withClient(running, bearer, (client) =>
+    const listed = await withClient(running, bearer, (client) =>
       Effect.gen(function* () {
         const a = yield* client["deck.open"]({ path: deckA, requestId: newRequestId() });
         yield* promptAndWait(client, a.scopeId, "stream");
         const b = yield* client["deck.open"]({ path: deckB, requestId: newRequestId() });
-        yield* promptAndWait(client, b.scopeId, "stream");
+        return lastReply(yield* promptAndWait(client, b.scopeId, "mcp slides_list {}"));
       })
     );
     const [onA, onB] = await waitForCredentials(log, 2);
@@ -363,8 +372,8 @@ describe("the studio's deck tools at /mcp", () => {
       throw new Error("Two agent sessions should have named their relays.");
     }
     expect(await initializeStatus(onA)).toBe(401);
-    const listed = await callTool(onB, "slides_list", {});
-    expect(listed.structuredContent).toMatchObject({
+    expect(await initializeStatus(onB)).toBe(200);
+    expect(Schema.decodeSync(Reply)(listed).result.structuredContent).toMatchObject({
       _tag: "SlideList",
       slides: [{ id: "b-one" }, { id: "b-two" }, { id: "b-three" }],
     });
@@ -403,6 +412,24 @@ describe("the studio's deck tools at /mcp", () => {
     expect({ transport: transport !== "", status: reused.status }).toEqual({ transport: true, status: 404 });
     // And the server ended it when the deck switch revoked its token.
     await running.stderrMatches(/Ended the MCP transport session of a revoked token\./);
+  });
+
+  it("refuses a deck tool call between turns, so nothing writes while Source is editable", async () => {
+    const { deckA, log, running, bearer } = await setup();
+    await withClient(running, bearer, (client) =>
+      Effect.gen(function* () {
+        const a = yield* client["deck.open"]({ path: deckA, requestId: newRequestId() });
+        yield* promptAndWait(client, a.scopeId, "stream");
+      })
+    );
+    // The agent logs its relay as session/new reaches it; wait for the line rather than read once.
+    const [credential] = await waitForCredentials(log, 1);
+    if (credential === undefined) {
+      throw new Error("No agent session named its relay.");
+    }
+    const refused = await callTool(credential, "slides_add", { id: "between" });
+    expect(refused).toMatchObject({ error: { code: -32001 } });
+    expect(existsSync(path.join(deckA, "slides", "between.mdx"))).toBe(false);
   });
 
   it("revokes a session's token when its agent exits, and gives the next session its own", async () => {

@@ -8,6 +8,7 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import path from "node:path";
@@ -659,6 +660,111 @@ describe("AgentChats and an untrusted deck", () => {
       assert.isTrue(Option.isSome(stopped), "The turn did not end after Stop.");
       const prompts = (yield* fs.readFileString(log)).split("\n").filter((line) => line === "prompt");
       assert.strictEqual(prompts.length, 1);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+});
+
+describe("AgentChats and the deck tool calls", () => {
+  /** An MCP server entry the mock agent logged, by its environment. */
+  const LoggedServer = Schema.fromJsonString(
+    Schema.Struct({ env: Schema.Array(Schema.Struct({ name: Schema.String, value: Schema.String })) })
+  );
+
+  /**
+   * Deck A's chat with a relay named in each session (never started here), and a file system whose
+   * reads of deck.json stall while `stall` is set, as a slow disk would hold a turn's setup.
+   */
+  const withRelay = Effect.fnUntraced(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "fuse-deck-studio-calls-" });
+    const deck = yield* fs.realPath(yield* Effect.promise(() => writeDeck(path.join(root, "deck"), DECK_A)));
+    const userData = path.join(root, "user-data");
+    const log = path.join(root, "agent.log");
+    yield* writeMockSettings(userData, { log });
+    const stall = { armed: false };
+    const stalled = yield* Deferred.make<void>();
+    const stalling = Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (real) =>
+        FileSystem.make({
+          ...real,
+          readFile: (file) =>
+            stall.armed && file.endsWith("deck.json")
+              ? Deferred.succeed(stalled, undefined).pipe(Effect.andThen(Effect.never))
+              : real.readFile(file),
+        })
+      )
+    ).pipe(Layer.provide(NodeServices.layer));
+    const relay = { command: "/usr/bin/false", args: [], env: {}, endpoint: "http://127.0.0.1:9/mcp" };
+    const services = yield* Layer.build(
+      Layer.mergeAll(
+        DeckFiles.layerFrom(deck),
+        AgentChats.layer({ stopDeadline: Duration.seconds(15), mcpRelay: Option.some(relay) }).pipe(
+          Layer.provide(AgentLaunch.layerWithPath(userData, "/usr/bin:/bin")),
+          Layer.provide(stalling)
+        )
+      ).pipe(Layer.provideMerge(McpTokens.layer))
+    );
+    const tokens = Context.get(services, McpTokens);
+    const chat = yield* Context.get(services, AgentChats).make({
+      scopeId: ScopeId.make("scope-a"),
+      files: Context.get(services, DeckFiles),
+    });
+    /** The session key of the first session's token, from the relay entry the agent logged. */
+    const sessionKey = Effect.gen(function* () {
+      const line = (yield* fs.readFileString(log)).split("\n").find((each) => each.startsWith("mcp-server "));
+      const server = yield* Schema.decodeUnknownEffect(LoggedServer)(line?.slice("mcp-server ".length));
+      const bearer = server.env.find(({ name }) => name === "FUSE_DECK_MCP_AUTHORIZATION")?.value ?? "";
+      const caller = yield* tokens.resolve(Redacted.make(bearer.slice("Bearer ".length)));
+      return Option.getOrThrowWith(caller, () => new Error("The logged token resolves to no session."))
+        .sessionKey;
+    });
+    return { chat, stall, stalled, sessionKey };
+  });
+
+  /** What a tool call came to: its value, or the tag it was refused with. */
+  const outcome = <A, E extends { readonly _tag: string }>(call: Effect.Effect<A, E>) =>
+    Effect.result(call).pipe(
+      Effect.map((result) => (result._tag === "Success" ? "ran" : result.failure._tag))
+    );
+
+  it.live("refuses a tool call while a reused session's next turn sets up, before its prompt goes out", () =>
+    Effect.gen(function* () {
+      const { chat, stall, stalled, sessionKey } = yield* withRelay();
+      yield* chat.prompt({ text: "stream", view: null });
+      yield* waitFor(chat, idle);
+      const key = yield* sessionKey;
+      stall.armed = true;
+      // The next turn snapshots the deck first, and its read of deck.json stalls there.
+      yield* chat.prompt({ text: "stream", view: null });
+      yield* Deferred.await(stalled);
+      assert.strictEqual(yield* outcome(chat.toolCall(key, Effect.void)), "ToolCallRefused");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+
+  it.live("refuses a tool call while a turn that ended drains its last calls", () =>
+    Effect.gen(function* () {
+      const { chat, sessionKey } = yield* withRelay();
+      yield* chat.prompt({ text: "write a-one", view: null });
+      const [card] = entriesOf(yield* waitFor(chat, pendingCard), "Permission");
+      const key = yield* sessionKey;
+      const release = yield* Deferred.make<void>();
+      const started = yield* Deferred.make<void>();
+      const first = yield* Effect.forkChild(
+        chat.toolCall(key, Deferred.succeed(started, undefined).pipe(Effect.andThen(Deferred.await(release))))
+      );
+      yield* Deferred.await(started);
+      // Allow ends the turn; its end waits for the first call, which still runs.
+      yield* chat.decide(card?.id ?? "", "allow");
+      // Calls keep running until the agent's answer ends the turn; from then on, while the first
+      // call still runs and the turn waits for it, a new call must be refused.
+      const late = yield* outcome(chat.toolCall(key, Effect.void)).pipe(
+        Effect.repeat({ until: (result) => result === "ToolCallRefused" }),
+        Effect.timeoutOption("5 seconds")
+      );
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(first);
+      assert.deepStrictEqual(late, Option.some("ToolCallRefused"));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 });
