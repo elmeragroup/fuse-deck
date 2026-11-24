@@ -11,6 +11,7 @@
     "./bundler/bundler": "./src/bundler/bundler.ts",
     "./bundler/mdx": "./src/bundler/mdx.ts",
     "./deck/check": "./src/deck/check.ts",
+    "./deck/contained-file": "./src/deck/contained-file.ts",
     "./deck/deck-files": "./src/deck/deck-files.ts",
     "./deck/deck-manifest": "./src/deck/deck-manifest.ts",
     "./deck/describe": "./src/deck/describe.ts",

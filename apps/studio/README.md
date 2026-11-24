@@ -31,6 +31,51 @@ stops the HTTP server, within `BACKEND_STOP_DEADLINE` (15 s).
   Invalid MDX still saves and comes back with its problem.
 - Recent decks live in `recent-decks.json` in the user data directory.
 
+### The agent chat
+
+Each open deck has one agent chat (`src/server/agent-chats.ts`), which the renderer follows with
+`agent.chat` and drives with `agent.prompt`, `agent.stop` and `agent.decide`.
+
+- A deck is untrusted, so the agent's launch takes nothing from it. The first prompt installs
+  `@agentclientprotocol/claude-agent-acp@0.109.0` into `<user data>/agent` with
+  `npm install --ignore-scripts`, unless that release is there already, and runs the package's
+  `bin` entry on the backend's own Node (Electron's, with `ELECTRON_RUN_AS_NODE=1`, in the desktop
+  app). The agent runs from `<user data>/agent`, in its own process group, with
+  `CLAUDE_AGENT_ACP_EXPERIMENTAL_V2=1`, Claude Code's background tasks off
+  (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`) and PATH from the login shell on macOS, cut to its
+  absolute entries whose real path exists outside the deck; the install runs the first `npm` on
+  that same PATH by its absolute path. Each session works in a directory of its own under
+  `<user data>/agent-sessions`, removed when the session ends, since the adapter and the Claude CLI
+  read the settings in a session's working directory, helper commands such as `apiKeyHelper`
+  included. It holds only `.claude/settings.local.json` with `permissions.defaultMode: "default"`,
+  which the adapter opens the session in; without it the adapter falls back to `auto`. The deck reaches the agent as the session's additional directory
+  (`additionalDirectories` of `session/new`), with its path in the system prompt
+  (`_meta.systemPrompt.append`). Its `_meta.claudeCode.options` keep Claude Code to the user's
+  own settings (`settingSources: ["user"]`), the MCP servers the studio names (`strictMcpConfig`), Stop
+  stopping background tasks, and no bypass mode, so the deck's `.claude` settings, hooks and
+  `.mcp.json` never load. `settings.json` in the user data directory can name a local command
+  instead, which runs from the same directory, and a file to log every ACP message to:
+  `{ "agent": { "command", "args", "protocolLog" } }`.
+- The studio speaks ACP through `@elmeragroup/effect-acp` and offers no client file system or
+  terminal; the agent edits the deck with its own tools. The session runs in the `default`
+  permission mode, set through its `mode` config option (ACP v2) or `session/set_mode` (v1). An
+  agent that does not confirm that mode gets no prompt.
+- A prompt carries the view as text, the slide id and step, after checking that the deck still
+  has that slide. When the agent advertises embedded context, the slide's source goes along as a
+  resource.
+- One turn runs at a time. Each permission request shows the agent's choices and its diff, patch
+  or named changes, and waits for the user. Stop, the end of the turn, the agent's exit, a closed
+  connection and the agent dropping the request each settle it as cancelled.
+- Stop sends `session/cancel` and keeps the turn `Stopping`, which keeps Source read-only, until
+  the agent ends the turn. An agent that has not ended it 15 s after Stop is stopped with its
+  process group; the next prompt starts a new one. The session otherwise stays for the next
+  prompt.
+- Closing or switching the deck ends the agent first: its process group gets SIGTERM, then
+  SIGKILL a second later, before the deck's admitted calls drain.
+- Each turn snapshots `deck.json` and `slides/*.mdx` as it starts, each through its real path and
+  only when that is a regular file inside the deck, as the slide a prompt embeds is read. `changes.list` compares that
+  snapshot with the disk: the Changes tab shows the result as observed changes, with no undo.
+
 ## Renderer (`src/renderer`)
 
 React 19, TanStack Router and Fuse components, built by Vite into `dist/renderer`, or served on
@@ -55,6 +100,6 @@ frame's window, the deck's origin and the current scope id.
 ## Tests
 
 ```sh
-pnpm --filter @elmeragroup/fuse-deck-studio test           # deck scopes in-process, the spawned backend
+pnpm --filter @elmeragroup/fuse-deck-studio test           # deck scopes and agent chats in-process, the spawned backend
 pnpm --filter @elmeragroup/fuse-deck-studio test:browser   # the built renderer and backend in Chromium
 ```

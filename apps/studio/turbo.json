@@ -1,9 +1,11 @@
 {
   "extends": ["//"],
   "tasks": {
-    // The unit tests spawn the built backend.
+    // The unit tests spawn the built backend, and the agent tests start the mock agent with the
+    // runner's PATH; the backend reads PATH and SHELL for the agent it launches.
     "test": {
-      "dependsOn": ["build"]
+      "dependsOn": ["build"],
+      "passThroughEnv": ["PATH", "SHELL"]
     },
     // The desktop app stages this package's tarball as its backend.
     "pack": {

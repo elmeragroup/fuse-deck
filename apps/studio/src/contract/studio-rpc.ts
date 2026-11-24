@@ -24,6 +24,8 @@ import {
 } from "@elmeragroup/deck-core/deck/slide-edit";
 import { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
 
+import { AgentBusy, ChatState, ObservedChanges, PermissionGone, PromptInput } from "./agent-chat.ts";
+
 /** The id of one opening of a deck. A deck opened twice gets two ids. */
 export const ScopeId = Schema.String.pipe(Schema.brand("ScopeId"));
 
@@ -173,5 +175,19 @@ export class StudioRpcs extends RpcGroup.make(
     success: SavedSlide,
     error: Schema.Union([StaleScope, SlideConflict, DeckOperationFailed]),
   }),
-  Rpc.make("recent.list", { success: Schema.Array(RecentDeck) })
+  Rpc.make("recent.list", { success: Schema.Array(RecentDeck) }),
+  /** The deck's agent chat, now and on every change. */
+  Rpc.make("agent.chat", { payload: ScopePayload, success: ChatState, error: StaleScope, stream: true }),
+  /** Start a turn; it answers once the turn runs, and the chat stream reports the rest. */
+  Rpc.make("agent.prompt", {
+    payload: { ...ScopePayload, input: PromptInput },
+    error: Schema.Union([StaleScope, AgentBusy]),
+  }),
+  Rpc.make("agent.stop", { payload: ScopePayload, error: StaleScope }),
+  Rpc.make("agent.decide", {
+    payload: { ...ScopePayload, requestId: Schema.String, optionId: Schema.String },
+    error: Schema.Union([StaleScope, PermissionGone]),
+  }),
+  /** The deck files that differ from the snapshot the last turn took when it started. */
+  Rpc.make("changes.list", { payload: ScopePayload, success: ObservedChanges, error: StaleScope })
 ) {}

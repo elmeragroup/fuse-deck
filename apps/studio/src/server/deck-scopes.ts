@@ -39,8 +39,11 @@ import path from "node:path";
 import { Bundler } from "@elmeragroup/deck-core/bundler/bundler";
 import { DeckFiles } from "@elmeragroup/deck-core/deck/deck-files";
 
+import type { ChatState } from "../contract/agent-chat.ts";
 import { DeckOpenFailed, ScopeId, StaleScope } from "../contract/studio-rpc.ts";
 import type { DeckChanged, OpenDeck, OpenRequestId, StudioState } from "../contract/studio-rpc.ts";
+import { AgentChats } from "./agent-chats.ts";
+import type { AgentChat } from "./agent-chats.ts";
 import { RecentDecks } from "./recent-decks.ts";
 
 /**
@@ -57,6 +60,8 @@ export type ScopedDeck = {
   readonly deck: OpenDeck;
   readonly files: DeckFiles["Service"];
   readonly bundler: Bundler["Service"];
+  /** The deck's agent chat, which ends first when the deck closes. */
+  readonly agent: AgentChat;
 };
 
 /** What an admitted call does to the deck: reads it, or writes to it. */
@@ -117,6 +122,8 @@ export class DeckScopes extends Context.Service<
     readonly openUrl: Effect.Effect<Option.Option<string>>;
     /** The open deck's file changes, until it closes. */
     readonly changes: (scopeId: ScopeId) => Stream.Stream<DeckChanged, StaleScope>;
+    /** The open deck's agent chat, until it closes. */
+    readonly chat: (scopeId: ScopeId) => Stream.Stream<ChatState, StaleScope>;
   }
 >()("@elmeragroup/fuse-deck-studio/server/DeckScopes") {
   /**
@@ -129,6 +136,7 @@ export class DeckScopes extends Context.Service<
       DeckScopes,
       Effect.gen(function* () {
         const recent = yield* RecentDecks;
+        const chats = yield* AgentChats;
         // Each deck's layers read the file system this layer was built with.
         const platform = yield* Effect.context<FileSystem.FileSystem>();
         const state = yield* SubscriptionRef.make<StudioState>({ _tag: "Empty", failed: null });
@@ -175,6 +183,15 @@ export class DeckScopes extends Context.Service<
         const closeLive = Effect.fn("DeckScopes.closeLive")(function* (live: LiveScope) {
           live.closing = true;
           yield* publish(live);
+          // The agent stops before the drain, so it cannot go on writing to a deck that is closing.
+          // Its end cancels the turn, which holds no lock across a read, so it is bounded; the
+          // drain deadline bounds it too, and the scope's close below ends whatever is left.
+          const ended = yield* live.agent.end.pipe(Effect.timeoutOption(config.drainTimeout));
+          if (Option.isNone(ended)) {
+            yield* Effect.logWarning(
+              `The agent chat on ${live.deck.root} did not end within ${Duration.format(config.drainTimeout)}.`
+            );
+          }
           yield* Effect.logInfo(
             `Closing ${live.deck.root} once its ${String(yield* FiberSet.size(live.work))} admitted calls settle.`
           );
@@ -227,10 +244,13 @@ export class DeckScopes extends Context.Service<
             Stream.runForEach((paths) => PubSub.publish(changes, { scopeId, paths: [...new Set(paths)] })),
             Effect.forkIn(scope)
           );
+          // Made last, so its scope finalizer, which ends the agent, runs first.
+          const agent = yield* chats.make({ scopeId, files }).pipe(Scope.provide(scope));
           const live: LiveScope = {
             deck: { scopeId, requestId, root: files.root, title: manifest.title, url: server.url },
             files,
             bundler,
+            agent,
             scope,
             work,
             writes,
@@ -360,6 +380,14 @@ export class DeckScopes extends Context.Service<
             })
           );
 
+        const chat = (scopeId: ScopeId) =>
+          Stream.unwrap(
+            Effect.suspend(() => {
+              const live = admitting(scopeId);
+              return live === undefined ? Effect.fail(stale(scopeId)) : Effect.succeed(live.agent.state);
+            })
+          );
+
         yield* Effect.addFinalizer(() => (current === undefined ? Effect.void : closeLive(current)));
 
         return DeckScopes.of({
@@ -371,6 +399,7 @@ export class DeckScopes extends Context.Service<
             current === undefined || current.closing ? Option.none() : Option.some(current.deck.url)
           ),
           changes,
+          chat,
         });
       })
     );

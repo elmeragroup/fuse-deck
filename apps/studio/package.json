@@ -41,6 +41,7 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@elmeragroup/deck-core": "workspace:*",
+    "@elmeragroup/effect-acp": "workspace:*",
     "@elmeragroup/fuse": "catalog:",
     "@elmeragroup/typescript-config": "workspace:*",
     "@tanstack/react-router": "catalog:",

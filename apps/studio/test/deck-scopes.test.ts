@@ -26,6 +26,7 @@ import { OpenRequestId } from "../src/contract/studio-rpc.ts";
 import type { DeckChanged, StudioState } from "../src/contract/studio-rpc.ts";
 import { DeckScopes } from "../src/server/deck-scopes.ts";
 import { RecentDecks } from "../src/server/recent-decks.ts";
+import { mockAgentChats, writeMockSettings } from "./agent.ts";
 import { DECK_A, DECK_B, DECK_CACHE, DECK_RUNTIME, writeDeck } from "./decks.ts";
 
 /** A fresh open request id, as the renderer picks one. */
@@ -45,13 +46,16 @@ const setup = Effect.fn("setup")(function* (
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "fuse-deck-studio-scopes-" });
   const deckA = yield* Effect.promise(() => writeDeck(path.join(root, "a"), DECK_A));
   const deckB = yield* Effect.promise(() => writeDeck(path.join(root, "b"), DECK_B));
+  const userData = path.join(root, "user-data");
+  const agentLog = path.join(root, "agent.log");
+  yield* writeMockSettings(userData, { log: agentLog });
   const services = yield* Layer.build(
     DeckScopes.layer({
       embedderOrigin: EMBEDDER,
       runtimeRoot: DECK_RUNTIME,
       cacheRoot: DECK_CACHE,
       drainTimeout,
-    }).pipe(Layer.provideMerge(recentDecks(path.join(root, "user-data"))))
+    }).pipe(Layer.provideMerge(recentDecks(userData)), Layer.provide(mockAgentChats(userData)))
   );
   const scopes = Context.get(services, DeckScopes);
   const recent = Context.get(services, RecentDecks);
@@ -61,7 +65,7 @@ const setup = Effect.fn("setup")(function* (
     Stream.runForEach((state) => Ref.update(seen, (all) => [...all, state])),
     Effect.forkScoped
   );
-  return { scopes, recent, deckA, deckB, seen };
+  return { scopes, recent, deckA, deckB, seen, agentLog };
 });
 
 /** Wait until the scopes publish a state `matches` accepts. */
@@ -119,6 +123,16 @@ const busyThreadPool = Effect.acquireRelease(
       busy.on = false;
     })
 );
+
+/** Whether a process with `pid` exists. */
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 describe("DeckScopes", () => {
   it.live("opens each deck in its own scope on its own dev server", () =>
@@ -295,6 +309,33 @@ describe("DeckScopes", () => {
       assert.strictEqual(response.headers["content-security-policy"], `frame-ancestors ${EMBEDDER}`);
       assert.isUndefined(response.headers["access-control-allow-origin"]);
     }).pipe(Effect.scoped, Effect.provide([NodeServices.layer, FetchHttpClient.layer]))
+  );
+
+  it.live("ends the old deck's agent, its permission request open, before the next deck opens", () =>
+    Effect.gen(function* () {
+      const { scopes, deckA, deckB, agentLog } = yield* setup(Duration.seconds(10));
+      const fs = yield* FileSystem.FileSystem;
+      const a = yield* scopes.open(deckA, newRequestId());
+      const chat = yield* scopes.chat(a.scopeId).pipe(Stream.runDrain, Effect.forkScoped);
+      yield* scopes.admit(a.scopeId, "Read", ({ agent }) => agent.prompt({ text: "hang", view: null }));
+      yield* scopes.chat(a.scopeId).pipe(
+        Stream.filter((state) =>
+          state.entries.some((entry) => entry._tag === "Permission" && entry.outcome._tag === "Pending")
+        ),
+        Stream.runHead
+      );
+      const started = (yield* fs.readFileString(agentLog))
+        .split("\n")
+        .find((line) => line.startsWith("start "));
+      const pid = Number(started?.slice("start ".length));
+      assert.isTrue(processExists(pid));
+      yield* scopes.open(deckB, newRequestId());
+      // The chat stream of A ended with its deck, and its agent's process group is gone.
+      yield* Fiber.join(chat);
+      assert.isFalse(processExists(pid));
+      const error = yield* Effect.flip(scopes.admit(a.scopeId, "Read", ({ agent }) => agent.stop));
+      assert.strictEqual(error._tag, "StaleScope");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 
   it.live("keeps the opened decks, newest first", () =>

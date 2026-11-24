@@ -231,6 +231,9 @@ importers:
       '@elmeragroup/deck-core':
         specifier: workspace:*
         version: link:../../packages/deck-core
+      '@elmeragroup/effect-acp':
+        specifier: workspace:*
+        version: link:../../packages/effect-acp
       '@elmeragroup/fuse':
         specifier: 'catalog:'
         version: 0.1.0-canary.213(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
