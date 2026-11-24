@@ -43,7 +43,7 @@ import { build as viteBuild, createLogger, createServer } from "vite";
 import type { InlineConfig, Logger, ServerOptions, ViteDevServer } from "vite";
 
 import { deckEntry, describeRefusal } from "../deck/contained-file.ts";
-import { DeckFiles } from "../deck/deck-files.ts";
+import { DeckFiles, SLIDES_DIR } from "../deck/deck-files.ts";
 import type { DeckIoFailed } from "../deck/deck-files.ts";
 import type { DeckManifest, DeckManifestInvalid } from "../deck/deck-manifest.ts";
 import type { SlideFrontmatterInvalid } from "../deck/slide-source.ts";
@@ -269,6 +269,14 @@ export class Bundler extends Context.Service<
             // No chokidar: `dev` polls the deck itself and reports each file on `server.watcher`,
             // which drives live reload as chokidar's events would. See `deck-poll.ts`.
             watch: null,
+            // The page loads each slide with a dynamic import, which Vite's first crawl does not
+            // follow, so a slide's own imports, such as a Fuse component, would be optimized only
+            // after the page rendered, and the reload that follows would mix two copies of React
+            // in the page meanwhile. Transforming the slides and the runtime's entry at start puts
+            // their imports in the first run.
+            warmup: {
+              clientFiles: [`./${SLIDES_DIR}/*.mdx`, path.join(runtimeRoot, "main.js")],
+            },
           },
         });
 

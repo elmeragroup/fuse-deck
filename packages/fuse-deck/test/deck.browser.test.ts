@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import * as Schema from "effect/Schema";
+import { spawn, spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -327,5 +328,58 @@ describe("a built deck", () => {
     const entry = html.search(/<script[^>]*type="module"/);
     expect(stylesheet).toBeGreaterThan(-1);
     expect([stylesheet < bootstrap, bootstrap < entry]).toEqual([true, true]);
+  });
+});
+
+describe("a deck in dev", () => {
+  it("loads a slide that imports a Fuse component with one optimizer run, and no reload", async () => {
+    const deck = path.join(workspace, "talk");
+    // A fresh cache, so the start optimizes every dependency anew.
+    const child = spawn(process.execPath, [BIN, "dev", "--json"], {
+      cwd: deck,
+      env: { ...process.env, XDG_CACHE_HOME: path.join(workspace, "dev-cache") },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    const exited = new Promise<void>((resolve) => child.on("exit", () => resolve()));
+    try {
+      const line = await new Promise<string>((resolve, reject) => {
+        let stdout = "";
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString();
+          if (stdout.includes("\n")) {
+            resolve(stdout.slice(0, stdout.indexOf("\n")));
+          }
+        });
+        child.on("exit", () => reject(new Error(`dev exited before it was ready: ${stderr}`)));
+      });
+      const { url } = Schema.decodeSync(
+        Schema.fromJsonString(Schema.TaggedStruct("DevServerReady", { url: Schema.String }))
+      )(line);
+      const page = await browser.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("console", (message) => {
+        if (message.type() === "error") {
+          errors.push(message.text());
+        }
+      });
+      await page.goto(`${url}#/outro`);
+      await page.getByRole("button", { name: "Ask a question" }).waitFor();
+      await page.waitForLoadState("networkidle");
+      await page.close();
+      // Without the slides in the first run, Vite found the slide's Fuse import late, re-optimized
+      // and reloaded the page, which meanwhile held two copies of React.
+      expect({ errors, reloaded: stderr.includes("optimized dependencies changed") }).toEqual({
+        errors: [],
+        reloaded: false,
+      });
+    } finally {
+      child.kill("SIGKILL");
+      await exited;
+    }
   });
 });
