@@ -77,6 +77,9 @@ export const StudioRpcHandlers = StudioRpcs.toLayer(
       "agent.decide": ({ scopeId, requestId, optionId }) =>
         scopes.admit(scopeId, "Read", ({ agent }) => agent.decide(requestId, optionId)),
       "changes.list": ({ scopeId }) => scopes.admit(scopeId, "Read", ({ agent }) => agent.changes),
+      "view.report": ({ scopeId, position, requestId }) =>
+        scopes.admit(scopeId, "Read", ({ view }) => view.report(position, Option.fromNullOr(requestId))),
+      "view.requests": ({ scopeId }) => scopes.viewRequests(scopeId),
     });
   })
 );

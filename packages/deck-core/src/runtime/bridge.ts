@@ -1,7 +1,9 @@
 /**
  * The preview bridge between a framed deck and the studio that frames it. Both directions carry
  * `{ scopeId, slideId, step }`: the deck reports each committed position, and the studio asks the
- * deck to go to one. Slide ids, not indexes, because a reorder changes every index after it.
+ * deck to go to one. Slide ids, not indexes, because a reorder changes every index after it. A
+ * request may carry a `requestId`, and the deck reports the position it commits for that request
+ * under the same id, so the studio can tell its answer from a move the user made.
  *
  * The bridge exists only when the studio served the deck and named itself in the manifest, and
  * only while a parent frame exists, so `fuse-deck dev`, `build` and a Present window never post.
@@ -18,6 +20,14 @@ export type BridgeMessage = {
   readonly slideId: string;
   /** How many of the slide's steps are revealed. */
   readonly step: number;
+  /** The studio's request this message asks for, or the report answers, or null for none. */
+  readonly requestId: string | null;
+};
+
+/** A position a studio message asks for, and the request it came under, if any. */
+export type RequestedPosition = {
+  readonly position: Position;
+  readonly requestId: string | null;
 };
 
 /** The studio window a framed deck reports to, and the origin it must have. */
@@ -46,17 +56,24 @@ export function bridgeParent(embedder: ManifestEmbedder | null): BridgeParent | 
  * @param parent - The studio frame.
  * @param position - The committed position.
  * @param slides - The deck's slides.
+ * @param requestId - The studio request that position answers, or null for any other move.
  */
 export function reportPosition(
   parent: BridgeParent,
   position: Position,
-  slides: readonly NavigableSlide[]
+  slides: readonly NavigableSlide[],
+  requestId: string | null
 ): void {
   const slide = slides[position.slide];
   if (slide === undefined) {
     return;
   }
-  const message: BridgeMessage = { scopeId: parent.embedder.scopeId, slideId: slide.id, step: position.step };
+  const message: BridgeMessage = {
+    scopeId: parent.embedder.scopeId,
+    slideId: slide.id,
+    step: position.step,
+    requestId,
+  };
   parent.window.postMessage(message, parent.embedder.origin);
 }
 
@@ -68,13 +85,13 @@ export function reportPosition(
  * @param parent - The studio frame.
  * @param event - The received message.
  * @param slides - The deck's slides.
- * @returns The position to go to, or null to ignore the message.
+ * @returns The position to go to and its request id, or null to ignore the message.
  */
 export function requestedPosition(
   parent: BridgeParent,
   event: MessageEvent<unknown>,
   slides: readonly NavigableSlide[]
-): Position | null {
+): RequestedPosition | null {
   if (event.source !== parent.window || event.origin !== parent.embedder.origin) {
     return null;
   }
@@ -87,7 +104,10 @@ export function requestedPosition(
   if (target === undefined) {
     return null;
   }
-  return { slide, step: Math.min(target.steps, message.step) };
+  return {
+    position: { slide, step: Math.min(target.steps, message.step) },
+    requestId: message.requestId,
+  };
 }
 
 /**
@@ -104,7 +124,7 @@ function messageFrom(event: MessageEvent<unknown>): BridgeMessage | null {
   if (data === null || typeof data !== "object") {
     return null;
   }
-  const { scopeId, slideId, step } = Object.fromEntries(Object.entries(data));
+  const { scopeId, slideId, step, requestId } = Object.fromEntries(Object.entries(data));
   // oxlint-disable-next-line anti-slop/no-runtime-typeof -- the postMessage boundary; see above
   if (typeof scopeId !== "string" || typeof slideId !== "string") {
     return null;
@@ -113,5 +133,9 @@ function messageFrom(event: MessageEvent<unknown>): BridgeMessage | null {
   if (typeof step !== "number" || !Number.isInteger(step) || step < 0) {
     return null;
   }
-  return { scopeId, slideId, step };
+  if (requestId === undefined || requestId === null) {
+    return { scopeId, slideId, step, requestId: null };
+  }
+  // oxlint-disable-next-line anti-slop/no-runtime-typeof -- the postMessage boundary; see above
+  return typeof requestId === "string" ? { scopeId, slideId, step, requestId } : null;
 }

@@ -12,15 +12,23 @@ import path from "node:path";
 
 import { runStudioServer } from "./studio-server.ts";
 
-// The build puts this file in dist/server and the deck runtime in dist/runtime.
-const runtimeRoot = path.join(import.meta.dirname, "..", "runtime");
+// The build puts this file in dist/server, the deck runtime in dist/runtime, the relay in
+// dist/relay and the skill in dist/skill.
+const dist = path.join(import.meta.dirname, "..");
 
-runStudioServer(runtimeRoot, {
-  pathVariable: process.env.PATH ?? "/usr/bin:/bin",
-  shell: process.env.SHELL ?? "/bin/zsh",
-  // The agent's adapter runs on this Node, which is Electron's in the desktop app.
-  node: { executable: process.execPath, electron: process.versions.electron !== undefined },
-}).pipe(
+runStudioServer(
+  {
+    runtimeRoot: path.join(dist, "runtime"),
+    relayEntry: path.join(dist, "relay", "bin.mjs"),
+    skill: path.join(dist, "skill", "SKILL.md"),
+  },
+  {
+    pathVariable: process.env.PATH ?? "/usr/bin:/bin",
+    shell: process.env.SHELL ?? "/bin/zsh",
+    // The agent's adapter and the MCP relay run on this Node, which is Electron's in the desktop app.
+    node: { executable: process.execPath, electron: process.versions.electron !== undefined },
+  }
+).pipe(
   Effect.provideService(References.LogToStderr, true),
   Effect.provide(NodeServices.layer),
   // A normal stop exits the process too. Vite 8.3 can leave its watcher running after its

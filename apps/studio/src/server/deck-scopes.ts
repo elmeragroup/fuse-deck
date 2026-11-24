@@ -41,9 +41,18 @@ import { DeckFiles } from "@elmeragroup/deck-core/deck/deck-files";
 
 import type { ChatState } from "../contract/agent-chat.ts";
 import { DeckOpenFailed, ScopeId, StaleScope } from "../contract/studio-rpc.ts";
-import type { DeckChanged, OpenDeck, OpenRequestId, StudioState } from "../contract/studio-rpc.ts";
+import type {
+  DeckChanged,
+  OpenDeck,
+  OpenRequestId,
+  StudioState,
+  ViewRequest,
+} from "../contract/studio-rpc.ts";
 import { AgentChats } from "./agent-chats.ts";
 import type { AgentChat } from "./agent-chats.ts";
+import { makeDeckView } from "./deck-view.ts";
+import type { DeckView } from "./deck-view.ts";
+import { McpTokens } from "./mcp-tokens.ts";
 import { RecentDecks } from "./recent-decks.ts";
 
 /**
@@ -62,6 +71,8 @@ export type ScopedDeck = {
   readonly bundler: Bundler["Service"];
   /** The deck's agent chat, which ends first when the deck closes. */
   readonly agent: AgentChat;
+  /** What the deck's preview shows, for the agent's view tools. */
+  readonly view: DeckView;
 };
 
 /** What an admitted call does to the deck: reads it, or writes to it. */
@@ -96,6 +107,8 @@ export type DeckScopesConfig = {
   readonly cacheRoot: string;
   /** How long a closing deck's admitted calls may run before they are cancelled. */
   readonly drainTimeout: Duration.Duration;
+  /** How long the agent's `view_go` waits for the preview to show the slide; `GO_DEADLINE` in the app. */
+  readonly goDeadline: Duration.Duration;
 };
 
 /** Opens, closes and admits calls about the one open deck. */
@@ -124,6 +137,8 @@ export class DeckScopes extends Context.Service<
     readonly changes: (scopeId: ScopeId) => Stream.Stream<DeckChanged, StaleScope>;
     /** The open deck's agent chat, until it closes. */
     readonly chat: (scopeId: ScopeId) => Stream.Stream<ChatState, StaleScope>;
+    /** The go requests of the open deck's view, for the renderer to carry out, until it closes. */
+    readonly viewRequests: (scopeId: ScopeId) => Stream.Stream<ViewRequest, StaleScope>;
   }
 >()("@elmeragroup/fuse-deck-studio/server/DeckScopes") {
   /**
@@ -137,6 +152,7 @@ export class DeckScopes extends Context.Service<
       Effect.gen(function* () {
         const recent = yield* RecentDecks;
         const chats = yield* AgentChats;
+        const tokens = yield* McpTokens;
         // Each deck's layers read the file system this layer was built with.
         const platform = yield* Effect.context<FileSystem.FileSystem>();
         const state = yield* SubscriptionRef.make<StudioState>({ _tag: "Empty", failed: null });
@@ -182,6 +198,8 @@ export class DeckScopes extends Context.Service<
 
         const closeLive = Effect.fn("DeckScopes.closeLive")(function* (live: LiveScope) {
           live.closing = true;
+          // The agent's MCP token goes before anything else, so no tool call reaches a closing deck.
+          yield* tokens.revokeScope(live.deck.scopeId);
           yield* publish(live);
           // The agent stops before the drain, so it cannot go on writing to a deck that is closing.
           // Its end cancels the turn, which holds no lock across a read, so it is bounded; the
@@ -244,6 +262,7 @@ export class DeckScopes extends Context.Service<
             Stream.runForEach((paths) => PubSub.publish(changes, { scopeId, paths: [...new Set(paths)] })),
             Effect.forkIn(scope)
           );
+          const view = yield* makeDeckView(config.goDeadline).pipe(Scope.provide(scope));
           // Made last, so its scope finalizer, which ends the agent, runs first.
           const agent = yield* chats.make({ scopeId, files }).pipe(Scope.provide(scope));
           const live: LiveScope = {
@@ -251,6 +270,7 @@ export class DeckScopes extends Context.Service<
             files,
             bundler,
             agent,
+            view,
             scope,
             work,
             writes,
@@ -388,6 +408,14 @@ export class DeckScopes extends Context.Service<
             })
           );
 
+        const viewRequests = (scopeId: ScopeId) =>
+          Stream.unwrap(
+            Effect.suspend(() => {
+              const live = admitting(scopeId);
+              return live === undefined ? Effect.fail(stale(scopeId)) : Effect.succeed(live.view.requests);
+            })
+          );
+
         yield* Effect.addFinalizer(() => (current === undefined ? Effect.void : closeLive(current)));
 
         return DeckScopes.of({
@@ -400,6 +428,7 @@ export class DeckScopes extends Context.Service<
           ),
           changes,
           chat,
+          viewRequests,
         });
       })
     );

@@ -109,6 +109,31 @@ export const DeckChanged = Schema.Struct({
 /** Files in the open deck that changed on disk. */
 export type DeckChanged = typeof DeckChanged.Type;
 
+/** A position in the preview: a slide by id, and how many of its steps show. */
+export const ViewPosition = Schema.Struct({
+  slideId: SlideId,
+  step: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+
+/** A position in the preview. */
+export type ViewPosition = typeof ViewPosition.Type;
+
+/**
+ * What the backend asks the renderer's preview, for the agent's `view_go`: show a position, under
+ * the go's request id, or drop the go with that id, which was stopped or timed out.
+ */
+export const ViewRequest = Schema.Union([
+  Schema.TaggedStruct("Go", {
+    requestId: Schema.String,
+    slideId: SlideId,
+    step: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+  Schema.TaggedStruct("Cancel", { requestId: Schema.String }),
+]);
+
+/** A request to the renderer's preview. */
+export type ViewRequest = typeof ViewRequest.Type;
+
 /** A deck the studio opened before. */
 export const RecentDeck = Schema.Struct({
   /** The deck directory, absolute. */
@@ -189,5 +214,15 @@ export class StudioRpcs extends RpcGroup.make(
     error: Schema.Union([StaleScope, PermissionGone]),
   }),
   /** The deck files that differ from the snapshot the last turn took when it started. */
-  Rpc.make("changes.list", { payload: ScopePayload, success: ObservedChanges, error: StaleScope })
+  Rpc.make("changes.list", { payload: ScopePayload, success: ObservedChanges, error: StaleScope }),
+  /**
+   * A position the preview committed, which the agent's `view_current` reads, and the go request it
+   * answers, if any.
+   */
+  Rpc.make("view.report", {
+    payload: { ...ScopePayload, position: ViewPosition, requestId: Schema.NullOr(Schema.String) },
+    error: StaleScope,
+  }),
+  /** What the agent's `view_go` asks the preview, for the renderer to carry out. */
+  Rpc.make("view.requests", { payload: ScopePayload, success: ViewRequest, error: StaleScope, stream: true })
 ) {}

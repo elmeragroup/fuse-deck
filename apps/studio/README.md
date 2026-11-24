@@ -31,6 +31,35 @@ stops the HTTP server, within `BACKEND_STOP_DEADLINE` (15 s).
   Invalid MDX still saves and comes back with its problem.
 - Recent decks live in `recent-decks.json` in the user data directory.
 
+### The deck tools at `/mcp`
+
+`/mcp` serves deck-core's six deck tools (`describe`, `slides_list`, `slides_add`, `slides_move`,
+`slides_remove`, `check`) and the view tools `view_current` and `view_go` over Streamable HTTP
+(`src/server/studio-tools.ts`). Only an agent session's relay reaches it.
+
+- A request with an Origin header gets 403, on every method. Then it needs a session's MCP token
+  as `Authorization: Bearer`; the renderer's bearer and anything else get 401. No other route
+  takes an MCP token.
+- A token is minted at `session/new` for that session and the deck it opened, and kept only as a
+  SHA-256 hash (`src/server/mcp-tokens.ts`). It is revoked when the session ends however it ends
+  (closed, failed setup, closed connection, agent exit) and when its deck starts closing or the
+  studio switches decks. Stop keeps it.
+- An MCP transport session (`Mcp-Session-Id`) belongs to the agent session whose token opened it:
+  any other token gets 404 for it, and revoking the token ends it.
+- Each tool call runs as an admitted call on the token's deck scope, and as a tool call of that
+  session's chat, only from the moment a turn's prompt goes out until Stop or the turn's end: a
+  closing deck refuses it and waits for it, Stop cancels it, and a call during a turn's setup, its
+  drain or between turns is refused.
+- `view_current` returns the slide and step the preview last reported (`view.report`).
+  `view_go` checks the slide is in the order and sends the request, with an id of its own, to the
+  renderer (`view.requests`), which posts it to the frame until the frame reports the position it
+  committed under that id; that position, a step past the last clamped, is the answer, or
+  `PreviewNotShown` after 10 s or with no studio window. Calls run one at a time per deck, and a
+  stopped or timed-out one sends a cancel, so it never moves the preview later.
+- A deck tool's permission card says what the call does ("Add slide `agenda` after `intro`") and
+  shows its arguments.
+- `describe` names the skill that ships with the backend, `dist/skill/SKILL.md`.
+
 ### The agent chat
 
 Each open deck has one agent chat (`src/server/agent-chats.ts`), which the renderer follows with
@@ -53,9 +82,9 @@ Each open deck has one agent chat (`src/server/agent-chats.ts`), which the rende
   (`_meta.systemPrompt.append`). Its `_meta.claudeCode.options` keep Claude Code to the user's
   own settings (`settingSources: ["user"]`), the MCP servers the studio names (`strictMcpConfig`), Stop
   stopping background tasks, and no bypass mode, so the deck's `.claude` settings, hooks and
-  `.mcp.json` never load. `settings.json` in the user data directory can name a local command
-  instead, which runs from the same directory, and a file to log every ACP message to:
-  `{ "agent": { "command", "args", "protocolLog" } }`.
+  `.mcp.json` never load. `settings.json` in the user data directory can name a local command instead,
+  which runs from the same directory, a file to log every ACP message to, and one the MCP relay
+  logs every MCP message to: `{ "agent": { "command", "args", "protocolLog", "mcpLog" } }`.
 - The studio speaks ACP through `@elmeragroup/effect-acp` and offers no client file system or
   terminal; the agent edits the deck with its own tools. The session runs in the `default`
   permission mode, set through its `mode` config option (ACP v2) or `session/set_mode` (v1). An
@@ -72,6 +101,11 @@ Each open deck has one agent chat (`src/server/agent-chats.ts`), which the rende
   prompt.
 - Closing or switching the deck ends the agent first: its process group gets SIGTERM, then
   SIGKILL a second later, before the deck's admitted calls drain.
+- Each session gets the deck tools: `session/new` names the relay (`dist/relay/bin.mjs`) as a
+  stdio MCP server, run on the backend's own Node with `ELECTRON_RUN_AS_NODE=1`, with the
+  backend's `/mcp` address and the session's token in the relay's environment only. The protocol
+  log writes the token as `<mcp-token>`. Stop interrupts the deck tool calls the turn admitted and
+  refuses new ones until the turn ends; the turn ends only once they have settled.
 - Each turn snapshots `deck.json` and `slides/*.mdx` as it starts, each through its real path and
   only when that is a regular file inside the deck, as the slide a prompt embeds is read. `changes.list` compares that
   snapshot with the disk: the Changes tab shows the result as observed changes, with no undo.

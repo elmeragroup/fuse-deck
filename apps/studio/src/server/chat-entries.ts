@@ -16,6 +16,7 @@ import * as Schema from "effect/Schema";
 import type * as Acp from "@elmeragroup/effect-acp/compat";
 
 import type { ChatEntry, NamedChange, PermissionChoice, ProposedDiff } from "../contract/agent-chat.ts";
+import { decodeToolInput, deckToolSummary, toolArguments } from "./deck-tool-summary.ts";
 
 type ToolEntry = Extract<ChatEntry, { readonly _tag: "Tool" }>;
 type PermissionEntry = Extract<ChatEntry, { readonly _tag: "Permission" }>;
@@ -216,15 +217,23 @@ export function permissionEntry(id: string, request: Acp.RequestPermissionReques
     kind: option.kind,
   }));
   const subject = request.subject;
+  const title = request.title ?? request.toolCall.title ?? "The agent asks for permission";
+  const command = subject?.type === "command" ? Option.getOrNull(decodeCommand(subject.command)) : null;
+  const input = Option.getOrElse(decodeToolInput(request.toolCall.rawInput), (): Schema.Json => null);
+  const files = fileDetail(request.toolCall.content);
+  // The arguments only when nothing else on the card says what the call does.
+  const shown = command !== null || files.diffs.length > 0 || files.changes.length > 0;
   return {
     _tag: "Permission",
     id,
-    title: request.title ?? request.toolCall.title ?? "The agent asks for permission",
-    command: subject?.type === "command" ? Option.getOrNull(decodeCommand(subject.command)) : null,
+    title,
+    command,
+    summary: Option.getOrNull(deckToolSummary(title, input)),
+    arguments: shown ? null : Option.getOrNull(toolArguments(input)),
     choices,
     outcome: { _tag: "Pending" },
     paths: request.toolCall.locations?.map((location) => location.path) ?? [],
-    ...fileDetail(request.toolCall.content),
+    ...files,
   };
 }
 

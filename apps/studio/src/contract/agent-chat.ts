@@ -98,6 +98,13 @@ export const ChatEntry = Schema.Union([
     title: Schema.String,
     /** A shell command the request is about, or null. */
     command: Schema.NullOr(Schema.String),
+    /**
+     * What a call of one of the studio's deck tools does, as a sentence with each slide id in
+     * backticks, or null for any other request.
+     */
+    summary: Schema.NullOr(Schema.String),
+    /** The tool call's arguments as indented JSON, or null when it has none, or a command, diff or named change says what it does. */
+    arguments: Schema.NullOr(Schema.String),
     choices: Schema.Array(PermissionChoice),
     outcome: PermissionOutcome,
     ...FileDetail,

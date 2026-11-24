@@ -39,6 +39,13 @@ In `apps/studio`, also ported after the named upstream file:
 - `src/renderer/state/studio-client.ts`, after `packages/client-runtime/src/rpc/session.ts`
 - `src/renderer/router.ts`, after `apps/web/src/router.ts`
 - `src/server/agent-launch.ts`, the login-shell PATH capture, after `packages/shared/src/shell.ts`
+- `src/server/mcp-tokens.ts`, after `apps/server/src/mcp/McpSessionRegistry.ts`
+
+In `apps/studio`, copied close to verbatim under upstream's file names (each header names what
+changed):
+
+- `src/relay/AcpMcpStdioBridge.ts`, from `apps/server/src/mcp/AcpMcpStdioBridge.ts`
+- `src/relay/mcpResponsePayloads.ts`, from `packages/shared/src/mcpResponsePayloads.ts`
 
 The studio backend's bundle inlines `@elmeragroup/effect-acp`, which is T3 Code's
 `packages/effect-acp` copied close to verbatim (`packages/effect-acp/README.md` lists the edits).

@@ -86,6 +86,8 @@ const AgentSettings = Schema.Struct({
       args: Schema.optionalKey(Schema.Array(Schema.String)),
       /** A file to append every ACP message to, one JSON line each. Off unless set. */
       protocolLog: Schema.optionalKey(Schema.String),
+      /** A file the MCP relay appends every MCP message to, one JSON line each. Off unless set. */
+      mcpLog: Schema.optionalKey(Schema.String),
     })
   ),
 });
@@ -143,6 +145,8 @@ export type AgentCommand = {
   readonly pathVariable: string;
   /** Where to log the ACP messages, if anywhere. */
   readonly protocolLog: Option.Option<string>;
+  /** Where the MCP relay logs the MCP messages, if anywhere. */
+  readonly mcpLog: Option.Option<string>;
 };
 
 /** The adapter could not be installed. */
@@ -218,6 +222,7 @@ const makeLaunch = Effect.fnUntraced(function* (
         const settings = yield* readSettings(userDataDirectory);
         const pathValue = yield* trustedPath(yield* pathVariable, deck);
         const protocolLog = Option.fromUndefinedOr(settings.agent?.protocolLog);
+        const mcpLog = Option.fromUndefinedOr(settings.agent?.mcpLog);
         yield* Effect.forEach(
           [directory, sessionsDirectory],
           (made) =>
@@ -241,6 +246,7 @@ const makeLaunch = Effect.fnUntraced(function* (
             env: { ELECTRON_RUN_AS_NODE: undefined },
             pathVariable: pathValue,
             protocolLog,
+            mcpLog,
           } satisfies AgentCommand;
         }
         const entry = yield* installing.withPermits(1)(installedAdapter(directory, pathValue));
@@ -252,6 +258,7 @@ const makeLaunch = Effect.fnUntraced(function* (
           env: { ELECTRON_RUN_AS_NODE: node.electron ? "1" : undefined },
           pathVariable: pathValue,
           protocolLog,
+          mcpLog,
         } satisfies AgentCommand;
       },
       Effect.provideService(FileSystem.FileSystem, fs),

@@ -136,6 +136,13 @@ function FileDetail({
   );
 }
 
+/** A deck tool's sentence, with each backticked slide id as code. */
+function Summary({ text }: { readonly text: string }) {
+  return (
+    <>{text.split("`").map((part, index) => (index % 2 === 1 ? <code key={index}>{part}</code> : part))}</>
+  );
+}
+
 /** A permission request: what the agent wants to do and the answers it offers. */
 function PermissionCard({
   deck,
@@ -150,7 +157,9 @@ function PermissionCard({
   return (
     <Card.Root className="studio-chat-permission" data-pending={pending ? "true" : undefined}>
       <Card.Header>
-        <Card.Title level={3}>{deckTitle(deck, entry.title)}</Card.Title>
+        <Card.Title level={3}>
+          {entry.summary === null ? deckTitle(deck, entry.title) : <Summary text={entry.summary} />}
+        </Card.Title>
         <Card.Description>
           {entry.outcome._tag === "Pending"
             ? "The agent asks before it goes on."
@@ -163,6 +172,11 @@ function PermissionCard({
         {entry.command === null ? null : (
           <pre className="studio-chat-command">
             <code>{entry.command}</code>
+          </pre>
+        )}
+        {entry.arguments === null ? null : (
+          <pre className="studio-chat-command">
+            <code>{entry.arguments}</code>
           </pre>
         )}
         <FileDetail deck={deck} entry={entry} />

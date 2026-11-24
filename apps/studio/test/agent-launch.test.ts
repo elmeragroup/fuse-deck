@@ -40,6 +40,7 @@ describe("AgentLaunch", () => {
           env: { ELECTRON_RUN_AS_NODE: undefined },
           pathVariable: "/usr/bin:/bin",
           protocolLog: Option.none(),
+          mcpLog: Option.none(),
         });
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
@@ -47,7 +48,7 @@ describe("AgentLaunch", () => {
   it.live("runs the local command settings.json names from the agent directory, and logs where it says", () =>
     Effect.gen(function* () {
       const { launch, userData } = yield* launchWith(
-        '{"agent":{"command":"/opt/agent/bin/agent","args":["--acp"],"protocolLog":"/tmp/acp.log"}}'
+        '{"agent":{"command":"/opt/agent/bin/agent","args":["--acp"],"protocolLog":"/tmp/acp.log","mcpLog":"/tmp/mcp.log"}}'
       );
       assert.deepStrictEqual(yield* launch.command(DECK), {
         command: "/opt/agent/bin/agent",
@@ -57,6 +58,7 @@ describe("AgentLaunch", () => {
         env: { ELECTRON_RUN_AS_NODE: undefined },
         pathVariable: "/usr/bin:/bin",
         protocolLog: Option.some("/tmp/acp.log"),
+        mcpLog: Option.some("/tmp/mcp.log"),
       });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );

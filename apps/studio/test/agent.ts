@@ -7,10 +7,12 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import path from "node:path";
 
 import { AgentChats } from "../src/server/agent-chats.ts";
+import type { McpRelay } from "../src/server/agent-chats.ts";
 import {
   AGENT_DIRECTORY,
   AgentLaunch,
@@ -31,11 +33,21 @@ export type MockAgentOptions = {
   readonly log?: string;
   /** How long after Stop the agent may take; the app's 15 s by default. */
   readonly stopDeadline?: Duration.Duration;
+  /** Whether `session/new` never answers, once it logs its MCP servers. */
+  readonly slowSession?: boolean;
+  /** Where the backend logs every ACP message, as `settings.json`'s `protocolLog`. */
+  readonly protocolLog?: string;
 };
 
 const encodeSettings = Schema.encodeEffect(
   Schema.fromJsonString(
-    Schema.Struct({ agent: Schema.Struct({ command: Schema.String, args: Schema.Array(Schema.String) }) })
+    Schema.Struct({
+      agent: Schema.Struct({
+        command: Schema.String,
+        args: Schema.Array(Schema.String),
+        protocolLog: Schema.optionalKey(Schema.String),
+      }),
+    })
   )
 );
 
@@ -50,9 +62,14 @@ export const writeMockSettings = Effect.fn("writeMockSettings")(function* (
     ...(options.embedded === true ? ["--embedded"] : []),
     ...(options.mode === undefined ? [] : [`--mode=${options.mode}`]),
     ...(options.log === undefined ? [] : [`--log=${options.log}`]),
+    ...(options.slowSession === true ? ["--slow-session"] : []),
   ];
   yield* fs.makeDirectory(userData, { recursive: true });
-  const settings = yield* encodeSettings({ agent: { command: process.execPath, args } });
+  const agent =
+    options.protocolLog === undefined
+      ? { command: process.execPath, args }
+      : { command: process.execPath, args, protocolLog: options.protocolLog };
+  const settings = yield* encodeSettings({ agent });
   yield* fs.writeFileString(path.join(userData, SETTINGS_FILE), `${settings}\n`);
 });
 
@@ -61,9 +78,15 @@ export const writeMockSettings = Effect.fn("writeMockSettings")(function* (
  *
  * @param userData - The user data directory holding `settings.json`.
  * @param stopDeadline - How long after Stop the agent may take.
+ * @param mcpRelay - The relay each session gets, or none.
+ * @returns The chats, which need the `McpTokens` the deck scopes share.
  */
-export function mockAgentChats(userData: string, stopDeadline = Duration.seconds(15)) {
-  return AgentChats.layer({ stopDeadline }).pipe(
+export function mockAgentChats(
+  userData: string,
+  stopDeadline = Duration.seconds(15),
+  mcpRelay: Option.Option<McpRelay> = Option.none()
+) {
+  return AgentChats.layer({ stopDeadline, mcpRelay }).pipe(
     Layer.provide(AgentLaunch.layerWithPath(userData, process.env.PATH ?? "/usr/bin:/bin"))
   );
 }

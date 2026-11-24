@@ -17,7 +17,10 @@ import * as Console from "effect/Console";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServer from "effect/http/HttpServer";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
@@ -29,16 +32,19 @@ import * as Stream from "effect/Stream";
 import { createServer } from "node:http";
 import path from "node:path";
 
-import { BACKEND_STOP_DEADLINE, StudioLaunch, StudioReady } from "../contract/studio-launch.ts";
-import { StudioRpcs } from "../contract/studio-rpc.ts";
+import { BACKEND_STOP_DEADLINE, MCP_PATH, StudioLaunch, StudioReady } from "../contract/studio-launch.ts";
+import { ScopeId, StudioRpcs } from "../contract/studio-rpc.ts";
 import { AgentChats, STOP_DEADLINE } from "./agent-chats.ts";
 import { AgentLaunch } from "./agent-launch.ts";
 import type { InheritedEnvironment } from "./agent-launch.ts";
 import { DeckScopes, DRAIN_TIMEOUT } from "./deck-scopes.ts";
+import { GO_DEADLINE } from "./deck-view.ts";
 import { makeHttpApp } from "./http-app.ts";
+import { McpTokens } from "./mcp-tokens.ts";
 import { RecentDecks } from "./recent-decks.ts";
 import { StudioRpcHandlers } from "./rpc-handlers.ts";
 import { StudioAuth } from "./studio-auth.ts";
+import { CurrentCaller, studioMcpLayer } from "./studio-tools.ts";
 
 /** Stdin closed, or its first line was not a launch document. */
 export class LaunchFailed extends Schema.TaggedError<LaunchFailed>()("LaunchFailed", {
@@ -51,22 +57,56 @@ const SHUTDOWN_GRACE = Duration.seconds(1);
 const decodeLaunch = Schema.decodeUnknownEffect(Schema.fromJsonString(StudioLaunch));
 const encodeReady = Schema.encodeEffect(Schema.fromJsonString(StudioReady));
 
+/** The files the backend ships beside its entry. */
+export type BackendFiles = {
+  /** The deck runtime's directory, which every deck's dev server loads. */
+  readonly runtimeRoot: string;
+  /** The MCP relay's entry, which each agent session runs on the backend's Node. */
+  readonly relayEntry: string;
+  /** The fuse-deck skill, which the `describe` tool names. */
+  readonly skill: string;
+};
+
+/**
+ * The agent chats, each session given the relay to this backend's `/mcp`. The relay runs on the
+ * backend's own Node, Electron's binary in the desktop app.
+ */
+function chatsLayer(launch: StudioLaunch, files: BackendFiles, inherited: InheritedEnvironment) {
+  return Layer.unwrap(
+    Effect.gen(function* () {
+      const server = yield* HttpServer.HttpServer;
+      const port = Option.getOrThrowWith(
+        portOf(server.address),
+        () => new Error("The server listens on no TCP port.")
+      );
+      return AgentChats.layer({
+        stopDeadline: STOP_DEADLINE,
+        mcpRelay: Option.some({
+          command: inherited.node.executable,
+          args: [files.relayEntry],
+          env: { ELECTRON_RUN_AS_NODE: "1" },
+          endpoint: `http://127.0.0.1:${String(port)}${MCP_PATH}`,
+        }),
+      });
+    })
+  ).pipe(Layer.provide(AgentLaunch.layer(launch.userDataDirectory, inherited)));
+}
+
 /** The services one backend run serves with, built from its launch document. */
-function studioLayer(launch: StudioLaunch, runtimeRoot: string, inherited: InheritedEnvironment) {
+function studioLayer(launch: StudioLaunch, files: BackendFiles, inherited: InheritedEnvironment) {
   const recent = RecentDecks.layer(launch.userDataDirectory);
-  const chats = AgentChats.layer({ stopDeadline: STOP_DEADLINE }).pipe(
-    Layer.provide(AgentLaunch.layer(launch.userDataDirectory, inherited))
-  );
   return Layer.mergeAll(
     DeckScopes.layer({
       embedderOrigin: launch.origin,
-      runtimeRoot,
+      runtimeRoot: files.runtimeRoot,
       cacheRoot: path.join(launch.userDataDirectory, "deck-cache"),
       drainTimeout: DRAIN_TIMEOUT,
-    }).pipe(Layer.provideMerge(recent), Layer.provide(chats)),
+      goDeadline: GO_DEADLINE,
+    }).pipe(Layer.provideMerge(recent), Layer.provide(chatsLayer(launch, files, inherited))),
     StudioAuth.layer(Redacted.make(launch.bootstrap)),
     RpcSerialization.layerJson
   ).pipe(
+    Layer.provideMerge(McpTokens.layer),
     // Port 0: the operating system picks a free port, and StudioReady reports it. A stop closes
     // the renderer's socket and waits at most SHUTDOWN_GRACE for it.
     Layer.provideMerge(
@@ -82,11 +122,11 @@ function studioLayer(launch: StudioLaunch, runtimeRoot: string, inherited: Inher
 /**
  * Run the backend until stdin closes.
  *
- * @param runtimeRoot - The deck runtime's directory, which every deck's dev server loads.
+ * @param files - The deck runtime, the relay and the skill the backend ships.
  * @param inherited - The backend's own PATH and shell, which the agent's launch starts from.
  */
 export const runStudioServer = Effect.fn("studio.server")(function* (
-  runtimeRoot: string,
+  files: BackendFiles,
   inherited: InheritedEnvironment
 ) {
   const stdio = yield* Stdio.Stdio;
@@ -122,9 +162,44 @@ export const runStudioServer = Effect.fn("studio.server")(function* (
       Effect.provide(StudioRpcHandlers),
       Effect.forkScoped
     );
+    const mcp = yield* HttpRouter.toHttpEffect(studioMcpLayer(files.skill));
+    // A revoked token's transport sessions end: a DELETE through the MCP endpoint terminates each
+    // and interrupts its requests still in flight.
+    const tokens = yield* McpTokens;
+    yield* tokens.revokedTransports.pipe(
+      Stream.runForEach((transportId) =>
+        mcp.pipe(
+          Effect.provideService(
+            HttpServerRequest.HttpServerRequest,
+            HttpServerRequest.fromWeb(
+              new Request(`http://127.0.0.1${MCP_PATH}`, {
+                method: "DELETE",
+                headers: { "mcp-session-id": transportId },
+              })
+            )
+          ),
+          Effect.provideService(CurrentCaller, { scopeId: ScopeId.make("revoked"), sessionKey: "revoked" }),
+          Effect.flatMap((response) =>
+            response.status === 204
+              ? Effect.logInfo("Ended the MCP transport session of a revoked token.")
+              : Effect.logWarning(`Ending an MCP transport session answered ${String(response.status)}.`)
+          ),
+          Effect.ignore
+        )
+      ),
+      Effect.forkScoped
+    );
     const server = yield* HttpServer.HttpServer;
     // Interruptible, so a stop ends the RPC socket's handler instead of waiting for the client.
-    yield* server.serve(Effect.interruptible(makeHttpApp(launch.origin, httpEffect)));
+    yield* server.serve(
+      Effect.interruptible(
+        makeHttpApp(
+          launch.origin,
+          httpEffect,
+          mcp.pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 500 })))
+        )
+      )
+    );
     const port = Option.getOrThrowWith(
       portOf(server.address),
       () => new Error("The server listens on no TCP port.")
@@ -136,7 +211,7 @@ export const runStudioServer = Effect.fn("studio.server")(function* (
     yield* Effect.logInfo("stdin closed; the studio backend stops.");
     // The server's fibers live in this inner scope, which closes before the layer's resources, the
     // HTTP server among them, are released.
-  }).pipe(Effect.scoped, Effect.provide(studioLayer(launch, runtimeRoot, inherited)));
+  }).pipe(Effect.scoped, Effect.provide(studioLayer(launch, files, inherited)));
 }, Effect.scoped);
 
 /**

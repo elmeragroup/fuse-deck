@@ -1,3 +1,4 @@
+import type * as Schema from "effect/Schema";
 import { assert, describe, it } from "vitest";
 
 import type * as Acp from "@elmeragroup/effect-acp/compat";
@@ -138,6 +139,8 @@ describe("permission entries", () => {
       id: "r1",
       title: "Run npm test",
       command: "npm test",
+      summary: null,
+      arguments: null,
       choices: [
         { optionId: "yes", name: "Allow", kind: "allow_once" },
         { optionId: "no", name: "Reject", kind: "reject_once" },
@@ -147,6 +150,80 @@ describe("permission entries", () => {
       diffs: [],
       changes: [],
     });
+  });
+
+  /** A deck tool's request as claude-agent-acp 0.109.0 sends it (from the S5 live session's log). */
+  const deckTool = (name: string, rawInput: Schema.Json): Acp.RequestPermissionRequest => ({
+    sessionId: "s",
+    title: `mcp__fuse-deck__${name}`,
+    toolCall: { toolCallId: "t", title: `mcp__fuse-deck__${name}`, rawInput },
+    options: [{ optionId: "allow-once", name: "Yes", kind: "allow_once" }],
+  });
+
+  it.each([
+    {
+      name: "slides_add",
+      input: { id: "agenda", after: "intro" },
+      summary: "Add slide `agenda` after `intro`",
+    },
+    {
+      name: "slides_add",
+      input: { id: "agenda", title: "Agenda", layout: "section" },
+      summary: "Add slide `agenda` at the end, titled “Agenda”, with the section layout",
+    },
+    {
+      name: "slides_move",
+      input: { id: "outro", before: "intro" },
+      summary: "Move slide `outro` before `intro`",
+    },
+    { name: "slides_remove", input: { id: "outro" }, summary: "Remove slide `outro`" },
+    {
+      name: "view_go",
+      input: { id: "agenda", step: 2 },
+      summary: "Show slide `agenda` in the preview, at step 2",
+    },
+    { name: "slides_list", input: {}, summary: "List the slides" },
+  ])("says what $name does with $input, and shows the arguments", ({ name, input, summary }) => {
+    const entry = permissionEntry("r2", deckTool(name, input));
+    assert.deepStrictEqual(
+      { summary: entry.summary, arguments: entry.arguments },
+      {
+        summary,
+        arguments: Object.keys(input).length === 0 ? null : JSON.stringify(input, null, 2),
+      }
+    );
+  });
+
+  it("leaves out the arguments of an edit whose diff the card shows", () => {
+    const entry = permissionEntry("r4", {
+      sessionId: "s",
+      title: "Edit slides/intro.mdx",
+      toolCall: {
+        toolCallId: "t",
+        title: "Edit slides/intro.mdx",
+        rawInput: { file_path: "/deck/slides/intro.mdx", old_string: "# Intro", new_string: "# Attacked" },
+        content: [
+          { type: "diff", path: "/deck/slides/intro.mdx", oldText: "# Intro\n", newText: "# Attacked\n" },
+        ],
+      },
+      options: [{ optionId: "allow-once", name: "Yes", kind: "allow_once" }],
+    });
+    assert.deepStrictEqual(
+      { arguments: entry.arguments, diffs: entry.diffs.length },
+      { arguments: null, diffs: 1 }
+    );
+  });
+
+  it("shows another MCP tool's arguments, with no sentence", () => {
+    const entry = permissionEntry("r3", {
+      ...deckTool("slides_add", { id: "x" }),
+      title: "mcp__other__search",
+      toolCall: { toolCallId: "t", title: "mcp__other__search", rawInput: { query: "fuse" } },
+    });
+    assert.deepStrictEqual(
+      { summary: entry.summary, arguments: entry.arguments },
+      { summary: null, arguments: '{\n  "query": "fuse"\n}' }
+    );
   });
 
   it("settles a pending request once, so a later withdrawal keeps the user's choice", () => {

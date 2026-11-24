@@ -16,9 +16,11 @@ import { DeckFiles } from "@elmeragroup/deck-core/deck/deck-files";
 import { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
 
 import type { ChatEntry, ChatState } from "../src/contract/agent-chat.ts";
+import { ScopeId } from "../src/contract/studio-rpc.ts";
 import { AgentChats } from "../src/server/agent-chats.ts";
 import type { AgentChat } from "../src/server/agent-chats.ts";
 import { AgentLaunch, SESSION_DIRECTORY } from "../src/server/agent-launch.ts";
+import { McpTokens } from "../src/server/mcp-tokens.ts";
 import { mockAgentChats, seedAdapter, writeMockSettings } from "./agent.ts";
 import type { MockAgentOptions } from "./agent.ts";
 import { DECK_A, slideTitle, writeDeck } from "./decks.ts";
@@ -35,11 +37,13 @@ const setup = Effect.fn("setup")(function* (options: Omit<MockAgentOptions, "log
   const log = path.join(root, "agent.log");
   yield* writeMockSettings(userData, { ...options, log });
   const services = yield* Layer.build(
-    Layer.mergeAll(DeckFiles.layerFrom(deck), mockAgentChats(userData, options.stopDeadline))
+    Layer.mergeAll(DeckFiles.layerFrom(deck), mockAgentChats(userData, options.stopDeadline)).pipe(
+      Layer.provideMerge(McpTokens.layer)
+    )
   );
   const chats = Context.get(services, AgentChats);
   const files = Context.get(services, DeckFiles);
-  const chat = yield* chats.make({ scopeId: "scope-a", files });
+  const chat = yield* chats.make({ scopeId: ScopeId.make("scope-a"), files });
   /** The lines the agent processes wrote to their log so far. */
   const agentLog = fs.readFileString(log).pipe(
     Effect.map((text) => text.split("\n").filter((line) => line !== "")),
@@ -415,13 +419,14 @@ describe("AgentChats and an untrusted deck", () => {
       const services = yield* Layer.build(
         Layer.mergeAll(
           DeckFiles.layerFrom(deck),
-          AgentChats.layer({ stopDeadline: Duration.seconds(15) }).pipe(
+          AgentChats.layer({ stopDeadline: Duration.seconds(15), mcpRelay: Option.none() }).pipe(
+            Layer.provide(McpTokens.layer),
             Layer.provide(AgentLaunch.layerWithPath(userData, pathVariable))
           )
         )
       );
       const chat = yield* Context.get(services, AgentChats).make({
-        scopeId: "scope-a",
+        scopeId: ScopeId.make("scope-a"),
         files: Context.get(services, DeckFiles),
       });
       yield* chat.prompt({ text: "stream", view: null });
@@ -584,14 +589,15 @@ describe("AgentChats and an untrusted deck", () => {
       const services = yield* Layer.build(
         Layer.mergeAll(
           DeckFiles.layerFrom(deck),
-          AgentChats.layer({ stopDeadline: Duration.seconds(15) }).pipe(
+          AgentChats.layer({ stopDeadline: Duration.seconds(15), mcpRelay: Option.none() }).pipe(
+            Layer.provide(McpTokens.layer),
             Layer.provide(AgentLaunch.layerWithPath(userData, RUNNER_PATH)),
             Layer.provide(stalling)
           )
         )
       );
       const chat = yield* Context.get(services, AgentChats).make({
-        scopeId: "scope-a",
+        scopeId: ScopeId.make("scope-a"),
         files: Context.get(services, DeckFiles),
       });
       const prompting = yield* chat.prompt({ text: "stream", view: null }).pipe(Effect.forkScoped);
@@ -630,14 +636,15 @@ describe("AgentChats and an untrusted deck", () => {
       const services = yield* Layer.build(
         Layer.mergeAll(
           DeckFiles.layerFrom(deck),
-          AgentChats.layer({ stopDeadline: Duration.seconds(15) }).pipe(
+          AgentChats.layer({ stopDeadline: Duration.seconds(15), mcpRelay: Option.none() }).pipe(
+            Layer.provide(McpTokens.layer),
             Layer.provide(AgentLaunch.layerWithPath(userData, RUNNER_PATH)),
             Layer.provide(stalling)
           )
         )
       );
       const chat = yield* Context.get(services, AgentChats).make({
-        scopeId: "scope-a",
+        scopeId: ScopeId.make("scope-a"),
         files: Context.get(services, DeckFiles),
       });
       yield* chat.prompt({ text: "stream", view: null });
