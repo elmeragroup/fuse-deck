@@ -8,6 +8,7 @@
  *   claude-acp's absolute form; on Allow it writes the
  *   file and ends the turn, on Reject or a cancel it ends the turn without writing.
  * - `patch`: asks with a v2 patch and named changes, then waits for the answer.
+ * - `patch2`: the same with one patch over two files, `a-one` and `a-two`.
  * - `wait`: asks for permission and then waits for `session/cancel` before it ends the turn.
  * - `hang`: asks for permission and ignores `session/cancel`; the turn never ends.
  * - `withdraw`: asks for permission, and ends the turn without waiting for the answer.
@@ -225,6 +226,38 @@ const program = Effect.gen(function* () {
                   oldPath: path.join(deck, "slides/two.mdx"),
                   path: path.join(deck, "slides/deux.mdx"),
                 },
+              ],
+              patch: { format: "git_patch", text: patch },
+            },
+          ]);
+          yield* endTurn(answer.outcome.outcome === "selected" ? "end_turn" : "cancelled");
+          return {};
+        }
+        case "patch2": {
+          // Two files in one patch, with claude-acp's absolute headers.
+          const one = path.join(deck, "slides/a-one.mdx");
+          const two = path.join(deck, "slides/a-two.mdx");
+          const patch = [
+            `diff --git ${one} ${one}`,
+            `--- ${one}`,
+            `+++ ${one}`,
+            "@@ -1 +1 @@",
+            "-# A one",
+            "+# A one, patched",
+            `diff --git ${two} ${two}`,
+            `--- ${two}`,
+            `+++ ${two}`,
+            "@@ -1 +1 @@",
+            "-# A two",
+            "+# A two, patched",
+            "",
+          ].join("\n");
+          const answer = yield* ask("Edit two slides", [
+            {
+              type: "diff",
+              changes: [
+                { operation: "modify", path: one },
+                { operation: "modify", path: two },
               ],
               patch: { format: "git_patch", text: patch },
             },

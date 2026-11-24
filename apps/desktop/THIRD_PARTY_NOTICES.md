@@ -38,6 +38,15 @@ In `apps/studio`, also ported after the named upstream file:
 - `src/contract/desktop-bridge.ts`, after `apps/desktop/src/preload.ts`
 - `src/renderer/state/studio-client.ts`, after `packages/client-runtime/src/rpc/session.ts`
 - `src/renderer/router.ts`, after `apps/web/src/router.ts`
+- `src/server/agent-launch.ts`, the login-shell PATH capture, after `packages/shared/src/shell.ts`
+
+The studio backend's bundle inlines `@elmeragroup/effect-acp`, which is T3 Code's
+`packages/effect-acp` copied close to verbatim (`packages/effect-acp/README.md` lists the edits).
+
+## Packages bundled into the renderer
+
+The renderer bundles `@pierre/words`, `@pierre/diffs` and `@pierre/highlights`, each under the
+Apache License 2.0. Their licence and notice files ship with the app in `dist/renderer/third-party/`.
 
 ## T3 Code licence
 

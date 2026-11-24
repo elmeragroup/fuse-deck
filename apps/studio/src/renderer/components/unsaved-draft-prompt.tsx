@@ -15,8 +15,9 @@ export type PendingLeave = {
 
 /**
  * The question before a deck switch, a close or a quit drops an unsaved draft: Save, Discard or
- * Cancel. Save goes on only once the draft saved; a save that fails or conflicts cancels the
- * leave, and `onSaveFailed` shows the editor with the reason. Discard goes on and writes nothing.
+ * Cancel. Save goes on only once the draft saved, and is off while the draft cannot be saved, as
+ * during an agent's turn; a save that fails or conflicts cancels the leave, and `onSaveFailed`
+ * shows the editor with the reason. Discard goes on and writes nothing.
  * Cancel, Escape and the close button leave everything as it was.
  */
 export function UnsavedDraftPrompt({
@@ -31,6 +32,7 @@ export function UnsavedDraftPrompt({
 }) {
   const [saving, setSaving] = useState(false);
   const file = pending?.draft.file ?? "";
+  const blocked = pending?.draft.saveBlocked ?? null;
 
   const save = () => {
     if (pending === null) {
@@ -59,7 +61,10 @@ export function UnsavedDraftPrompt({
       <Dialog.Content size="md" showCloseButton={false}>
         <Dialog.Header>
           <Dialog.Title>Save your changes to {file}?</Dialog.Title>
-          <Dialog.Description>The Source tab has edits that are not saved.</Dialog.Description>
+          <Dialog.Description>
+            The Source tab has edits that are not saved.
+            {blocked === null ? null : ` ${blocked}`}
+          </Dialog.Description>
         </Dialog.Header>
         <Dialog.Footer>
           <Dialog.Close render={<Button variant="outline" disabled={saving} />}>Cancel</Dialog.Close>
@@ -72,7 +77,7 @@ export function UnsavedDraftPrompt({
             }}>
             Discard
           </Button>
-          <Button disabled={saving} onClick={save}>
+          <Button disabled={saving || blocked !== null} onClick={save}>
             {saving ? "Saving…" : "Save"}
           </Button>
         </Dialog.Footer>

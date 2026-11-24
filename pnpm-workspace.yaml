@@ -59,6 +59,12 @@ catalog:
   # The studio renderer's router, as t3code's apps/web uses it.
   "@tanstack/react-router": 1.170.46
 
+  # The studio's chat: Markdown through @pierre/words, diffs through @pierre/diffs at t3code's pin,
+  # and the highlighter both share (words takes it as a peer; diffs pins this release).
+  "@pierre/diffs": 1.7.0-beta.4
+  "@pierre/highlights": 0.5.1
+  "@pierre/words": 0.3.0
+
   # The studio's desktop shell, at the releases t3code's apps/desktop runs (t3code 2fe7febc).
   electron: 44.10.1
   electron-builder: 26.16.1

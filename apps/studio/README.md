@@ -83,7 +83,7 @@ React 19, TanStack Router and Fuse components, built by Vite into `dist/renderer
 `window.fuseDeckStudio`. Without that bridge it is the browser-tab test harness, which reads
 `#backend=…&bootstrap=…` (or `&bearer=…`, and `&deck=…`) from its address and clears it.
 
-The center has two tabs, both kept mounted. Preview frames the deck's dev server. Source edits one
+The center has three tabs, all kept mounted. Preview frames the deck's dev server. Source edits one
 slide in a Fuse textarea: Save or Cmd/Ctrl+S saves it, a conflict keeps the draft beside the disk
 state, and a `deck.changed` report about the open slide loads it into a draft without edits or
 shows a notice. A save writes the line ending the file had when it was opened (the majority ending
@@ -91,7 +91,17 @@ of a mixed file). Opening another deck, closing this one or quitting the desktop
 edits asks Save, Discard or Cancel first, and a draft stays while the backend restarts and the
 deck reopens. Present opens the deck at the preview's position: a fullscreen window in the
 desktop app, which main allows only on the origin the backend reports for the open deck, and the
-browser's fullscreen on the preview frame in the harness.
+browser's fullscreen on the preview frame in the harness. While an agent turn runs, Source is
+read-only and offers Stop. Changes shows the deck files that differ on disk from the snapshot the
+last turn took as it started, as observed changes, with no undo.
+
+The agent chat sits on the right, styled with Fuse's `--right-panel` tokens, with its own open
+state, kept in local storage, and Cmd/Ctrl+J. Below Fuse's `lg` width it is a Fuse `Sheet`,
+closed until asked for. Each prompt carries the preview's slide and step. Agent text renders
+through `@pierre/words`, which drops raw HTML and unsafe links; the studio also drops every
+image, so a reply cannot fetch a remote image. Diffs render through `@pierre/diffs`,
+its `--diffs-*` properties mapped to Fuse's tokens. The build copies the licence and notice files
+of the bundled `@pierre` packages to `third-party/`.
 
 The preview frames the deck's dev server. deck-core's runtime posts `{ scopeId, slideId, step }`
 to the studio after each position change, and the studio accepts one only from the current

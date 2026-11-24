@@ -14,6 +14,7 @@ import { Button } from "@elmeragroup/fuse/button";
 import { Kbd, KbdGroup } from "@elmeragroup/fuse/kbd";
 import { Textarea } from "@elmeragroup/fuse/textarea";
 
+import type { AgentTurn } from "../../contract/agent-chat.ts";
 import type { OpenDeck } from "../../contract/studio-rpc.ts";
 import { slideReads } from "../state/slide-reads.ts";
 import type { ReadKey, SlideReads } from "../state/slide-reads.ts";
@@ -87,6 +88,8 @@ export type UnsavedDraft = {
   readonly file: string;
   /** The draft's text, with the line endings the file is saved with. */
   readonly text: string;
+  /** Why the draft cannot be saved now, such as an agent's turn, or null when it can. */
+  readonly saveBlocked: string | null;
   /** Save the draft over the revision it was opened at; true when it saved. */
   readonly save: () => Promise<boolean>;
 };
@@ -189,12 +192,18 @@ export function SourceEditor({
   deck,
   target,
   active,
+  agentTurn,
   onUnsavedDraft,
 }: {
   readonly deck: OpenDeck;
   readonly target: SlideId | null;
   /** Whether the Source tab shows. A hidden editor reads nothing from the backend. */
   readonly active: boolean;
+  /**
+   * The agent's turn. While one runs or stops, the editor is read-only and offers Stop: the agent
+   * writes to the deck then. The save's revision check stays the guard against a lost edit.
+   */
+  readonly agentTurn: AgentTurn;
   /** Called with the draft whenever it has edits, and with null when it has none. */
   readonly onUnsavedDraft: (draft: UnsavedDraft | null) => void;
 }) {
@@ -207,6 +216,12 @@ export function SourceEditor({
   });
   const textarea = useRef<HTMLTextAreaElement | null>(null);
   const gutter = useRef<HTMLDivElement | null>(null);
+  // Every save goes through `save`, which reads the turn the last render committed.
+  const agentTurnRef = useRef(agentTurn);
+  useLayoutEffect(() => {
+    agentTurnRef.current = agentTurn;
+  });
+  const saveBlocked = saveBlockedBy(agentTurn);
 
   // Every read of the slide goes through one owner, which drops an answer that a newer read, a
   // reconnect, a reopened deck or another slide made stale.
@@ -360,11 +375,19 @@ export function SourceEditor({
     }
   }, [active, diskChange, deck.scopeId, checkDisk]);
 
-  /** Save the draft over `expected`. It resolves with the outcome, or null when no save started. */
+  /**
+   * Save the draft over `expected`, the one save operation every control uses. It resolves with
+   * the outcome, or null when no save started: none starts while the agent's turn runs or stops.
+   */
   const save = useCallback(
     (expected: SlideRevision | null): Promise<SaveOutcome | null> => {
       const current = stateRef.current;
       if (current._tag !== "Editing" || current.saving) {
+        return Promise.resolve(null);
+      }
+      const blocked = saveBlockedBy(agentTurnRef.current);
+      if (blocked !== null) {
+        client.announce(`Not saved: ${blocked}`);
         return Promise.resolve(null);
       }
       const { id, draft, lineEnding } = current;
@@ -395,6 +418,7 @@ export function SourceEditor({
     onUnsavedDraft({
       file: slideFile(unsavedId),
       text: unsavedText,
+      saveBlocked,
       save: () => {
         const current = stateRef.current;
         if (current._tag !== "Editing" || current.conflict !== null) {
@@ -403,7 +427,7 @@ export function SourceEditor({
         return save(current.base).then((outcome) => outcome?._tag === "Saved");
       },
     });
-  }, [unsavedId, unsavedText, save, onUnsavedDraft]);
+  }, [unsavedId, unsavedText, saveBlocked, save, onUnsavedDraft]);
   useEffect(
     () => () => {
       onUnsavedDraft(null);
@@ -479,6 +503,7 @@ export function SourceEditor({
   }
 
   const dirty = isDirty(state);
+  const locked = saveBlocked !== null;
   const located =
     state.problem?._tag === "SlideCompileFailed" && state.problem.line !== null ? state.problem : null;
   const problemLine = located?.line ?? null;
@@ -503,7 +528,7 @@ export function SourceEditor({
         <Button
           size="sm"
           aria-keyshortcuts="Meta+S Control+S"
-          disabled={!dirty || state.saving || state.conflict !== null}
+          disabled={!dirty || state.saving || state.conflict !== null || locked}
           onClick={() => {
             void save(state.base);
           }}>
@@ -511,6 +536,23 @@ export function SourceEditor({
         </Button>
       </div>
 
+      {locked ? (
+        <Alert.Root variant="info" role="none">
+          <Alert.Title level={3}>The agent is working</Alert.Title>
+          <Alert.Description>
+            Source is read-only until the agent's turn ends.{" "}
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={agentTurn === "Stopping"}
+              onClick={() => {
+                void client.stopAgent(deck.scopeId);
+              }}>
+              {agentTurn === "Stopping" ? "Stopping…" : "Stop"}
+            </Button>
+          </Alert.Description>
+        </Alert.Root>
+      ) : null}
       {state.failure === null ? null : (
         <Alert.Root variant="destructive" role="alert">
           <Alert.Title level={3}>Not saved</Alert.Title>
@@ -553,6 +595,7 @@ export function SourceEditor({
             spellCheck={false}
             aria-keyshortcuts="Meta+S Control+S"
             onKeyDown={onKeyDown}
+            readOnly={locked}
             value={state.draft}
             onScroll={(event) => {
               if (gutter.current !== null) {
@@ -571,6 +614,7 @@ export function SourceEditor({
           draft={state.draft}
           disk={state.conflict}
           saving={state.saving}
+          saveBlocked={saveBlocked}
           onKeepDraft={(expected) => {
             void save(expected);
           }}
@@ -607,6 +651,11 @@ export function SourceEditor({
   );
 }
 
+/** Why no save can start during `turn`, or null when one can: the agent writes to the deck then. */
+function saveBlockedBy(turn: AgentTurn): string | null {
+  return turn === "Idle" ? null : "Source is read-only until the agent's turn ends.";
+}
+
 /** The notice for a slide that changed on disk while the draft had edits. */
 function ChangedOnDisk({
   id,
@@ -641,6 +690,7 @@ function Conflict({
   draft,
   disk,
   saving,
+  saveBlocked,
   onKeepDraft,
   onLoadDisk,
 }: {
@@ -648,6 +698,8 @@ function Conflict({
   readonly draft: string;
   readonly disk: DiskState;
   readonly saving: boolean;
+  /** Why the draft cannot be saved now, or null. */
+  readonly saveBlocked: string | null;
   readonly onKeepDraft: (expected: SlideRevision | null) => void;
   readonly onLoadDisk: () => void;
 }) {
@@ -696,7 +748,7 @@ function Conflict({
       <div className="studio-conflict-actions">
         {disk._tag === "NotInDeck" ? null : (
           <Button
-            disabled={saving}
+            disabled={saving || saveBlocked !== null}
             onClick={() => {
               onKeepDraft(disk._tag === "Present" ? disk.revision : null);
             }}>
