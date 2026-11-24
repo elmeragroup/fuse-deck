@@ -19,7 +19,7 @@ slide; this file does not repeat it.
 5. Run `fuse-deck check --json` after each round of edits. It compiles every slide and validates
    the theme. On exit 1, its document lists each problem with a hint.
 6. To see the deck while you work, run `fuse-deck dev --json`. It prints the address to open once
-   the server listens, then serves until interrupted.
+   the server listens on 127.0.0.1, then serves until interrupted.
 7. Finish with `fuse-deck build --json`. The deck is done when the build exits 0. Its document
    names the directory it wrote, `dist/` unless you passed `--out`.
 
