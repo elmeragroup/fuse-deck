@@ -119,6 +119,11 @@ export const VERBS = [
     summary:
       "Report dangling ids, orphan files, invalid frontmatter, slides that do not compile and an invalid theme.",
   },
+  {
+    usage: "fuse-deck mcp",
+    summary:
+      "Serve describe, slides list, add, move and remove, and check as MCP tools over stdio, for the deck in the working directory, until stdin ends. Each tool returns the document its command prints with --json.",
+  },
 ] as const;
 
 /** How a deck lays out its files. Agents edit the slide files directly. */

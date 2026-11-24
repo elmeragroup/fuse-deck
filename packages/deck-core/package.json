@@ -23,6 +23,7 @@
     "./deck/slide-edit": "./src/deck/slide-edit.ts",
     "./deck/slide-id": "./src/deck/slide-id.ts",
     "./deck/vocabulary": "./src/deck/vocabulary.ts",
+    "./tools/deck-tools": "./src/tools/deck-tools.ts",
     "./package.json": "./package.json"
   },
   "scripts": {

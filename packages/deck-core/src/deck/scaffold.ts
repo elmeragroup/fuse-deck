@@ -242,5 +242,7 @@ absolute path of the skill that ships with fuse-deck; open that file for the wor
 - Run \`fuse-deck check --json\` after each change. It exits 1 and lists each problem when the deck is
   broken.
 - \`fuse-deck dev\` serves the deck with live reload; \`fuse-deck build\` writes it to \`dist/\`.
+- An agent that speaks MCP can start \`fuse-deck mcp\` in this directory instead. It serves the same
+  commands as tools.
 `;
 }

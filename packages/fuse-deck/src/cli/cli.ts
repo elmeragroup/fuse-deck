@@ -4,6 +4,8 @@
  * failure exits 1.
  */
 
+import * as McpProtocol from "effect/ai/McpProtocol";
+import * as McpServer from "effect/ai/McpServer";
 import * as Cause from "effect/Cause";
 import * as Argument from "effect/cli/Argument";
 import * as CliConfig from "effect/cli/CliConfig";
@@ -33,6 +35,7 @@ import type { DeckVocabularyDocument } from "@elmeragroup/deck-core/deck/describ
 import { DEFAULT_THEME, scaffoldDeck } from "@elmeragroup/deck-core/deck/scaffold";
 import { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
 import * as Vocabulary from "@elmeragroup/deck-core/deck/vocabulary";
+import { deckToolsForDeck } from "@elmeragroup/deck-core/tools/deck-tools";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { runtimeRoot, shippedSkillPath, userCacheRoot } from "../package-root.ts";
@@ -277,12 +280,46 @@ const build = Command.make(
   })
 ).pipe(Command.withDescription("Build the deck into static files"), Command.provide(bundlerLayer));
 
+/**
+ * The MCP revisions `mcp` serves, newest first. A client that offers another revision gets the
+ * first one, as the MCP handshake allows.
+ */
+const MCP_PROTOCOLS = [
+  McpProtocol.v2025_11_25,
+  McpProtocol.v2025_06_18,
+  McpProtocol.v2025_03_26,
+  McpProtocol.v2024_11_05,
+] as const;
+
+const mcp = Command.make(
+  "mcp",
+  {},
+  Effect.fn("cli.mcp")(function* () {
+    // Stdout carries only MCP messages from here on: the server owns it until stdin ends.
+    return yield* Layer.launch(
+      McpServer.layerStdio({
+        name: "fuse-deck",
+        version: packageJson.version,
+        instructions:
+          "These tools edit the fuse-deck deck in the directory the server started in. Call describe first, then slides_add for each slide and write its content in slides/<id>.mdx. Run check after each round of edits.",
+        protocols: MCP_PROTOCOLS,
+        registrations: deckToolsForDeck(shippedSkillPath()),
+      })
+    );
+  })
+).pipe(
+  Command.withDescription(
+    "Serve describe, slides list, add, move and remove, and check as MCP tools over stdio, for the deck in the working directory, until stdin ends"
+  ),
+  Command.provide(bundlerLayer)
+);
+
 const cli = Command.make("fuse-deck").pipe(
   Command.withDescription(
     "Build Fuse-themed slide decks from MDX. Agents start with `fuse-deck describe --json`."
   ),
   Command.withGlobalFlags([Json]),
-  Command.withSubcommands([create, describe, slides, check, dev, build])
+  Command.withSubcommands([create, describe, slides, check, dev, build, mcp])
 );
 
 function orderText(order: readonly SlideId[]): string {

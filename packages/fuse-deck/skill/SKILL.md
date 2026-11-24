@@ -28,3 +28,25 @@ slide; this file does not repeat it.
 
 Pass `--json` to every command. Stdout then holds exactly one JSON document, and a failure carries
 `_tag`, `message` and usually `hint`. Exit 2 means the command line did not parse.
+
+## As MCP tools
+
+`fuse-deck mcp` serves the deck commands as MCP tools over stdio: `describe`, `slides_list`,
+`slides_add`, `slides_move`, `slides_remove` and `check`. Each tool takes the command's arguments
+and flags as parameters (`slides_add` takes `id`, `after`, `layout` and `title`) and returns the
+document the command prints with `--json`. A failure is an error result holding the command's
+failure document. `create`, `dev` and `build` stay commands.
+
+The server edits the deck in the directory it starts in, or the nearest one above it, and stops
+when stdin ends. Register it so the agent starts it in the deck. For Claude Code, run this in the
+deck, which writes `.mcp.json` there:
+
+```sh
+claude mcp add --scope project fuse-deck -- fuse-deck mcp
+```
+
+Another agent takes the same server in its MCP configuration, started in the deck:
+
+```json
+{ "mcpServers": { "fuse-deck": { "command": "fuse-deck", "args": ["mcp"] } } }
+```
