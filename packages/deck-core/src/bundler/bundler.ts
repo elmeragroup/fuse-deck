@@ -7,16 +7,20 @@
 
 import react from "@vitejs/plugin-react";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import { Console } from "node:console";
+import type { Server as HttpServer } from "node:http";
 import path from "node:path";
 import { build as viteBuild, createLogger, createServer } from "vite";
-import type { InlineConfig, Logger } from "vite";
+import type { InlineConfig, Logger, ServerOptions, ViteDevServer } from "vite";
 
 import { DeckFiles } from "../deck/deck-files.ts";
 import type { DeckIoFailed } from "../deck/deck-files.ts";
@@ -25,7 +29,7 @@ import type { SlideFrontmatterInvalid } from "../deck/slide-source.ts";
 import { BUILD_MARKER, resolveBuildOutput } from "./build-output.ts";
 import type { BuildOutputRefused } from "./build-output.ts";
 import { deckPlugins } from "./deck-plugin.ts";
-import type { DeckManifestModule } from "./deck-plugin.ts";
+import type { DeckManifestModule, Embedder } from "./deck-plugin.ts";
 import { firstPaint, loadFuseTheme } from "./fuse-theme.ts";
 import type { FirstPaint, FuseThemeUnavailable, InvalidTheme } from "./fuse-theme.ts";
 import { compileSlide } from "./mdx.ts";
@@ -44,7 +48,39 @@ export class BundlerFailed extends Schema.TaggedError<BundlerFailed>()("BundlerF
 export type DevServer = {
   /** The address the deck is served at. */
   readonly url: string;
+  /**
+   * The absolute path of each file the dev server's watcher sees added, changed or removed, for
+   * as long as the stream runs. It is the watcher that drives live reload, not a second one.
+   */
+  readonly changes: Stream.Stream<string>;
 };
+
+/** How `dev` serves the deck. */
+export type DevOptions =
+  /**
+   * Vite's own server, as `fuse-deck dev` runs it. Vite listens, and it ends the process on SIGTERM
+   * or when stdin ends.
+   */
+  | {
+      readonly _tag: "Standalone";
+      /** The port to serve on. None takes Vite's default, 5173, or the next free one. */
+      readonly port: Option.Option<number>;
+    }
+  /**
+   * Vite in middleware mode on a listener the host owns, for the studio's preview. Vite installs no
+   * process handlers, so the host alone decides when its process stops. The deck installs the
+   * preview bridge, sends a framing policy for `embedder` and answers no cross-origin read.
+   */
+  | {
+      readonly _tag: "Embedded";
+      /** The page allowed to frame the deck. */
+      readonly embedder: Embedder;
+      /**
+       * A server already listening on 127.0.0.1. The deck takes its requests and its HMR socket
+       * until the scope closes; the host closes it after that.
+       */
+      readonly listener: HttpServer;
+    };
 
 /** What `dev` and `build` can fail with before Vite runs. */
 export type DeckSiteError =
@@ -73,7 +109,7 @@ export class Bundler extends Context.Service<
     ) => Effect.Effect<CompiledSlide, SlideCompileFailed | SlideFrontmatterInvalid>;
 
     /** Serve the deck until the scope closes. */
-    readonly dev: (port: Option.Option<number>) => Effect.Effect<DevServer, DeckSiteError, Scope.Scope>;
+    readonly dev: (options: DevOptions) => Effect.Effect<DevServer, DeckSiteError, Scope.Scope>;
 
     /** Build the deck into `out`, a directory inside the deck or outside it that the build owns. */
     readonly build: (
@@ -129,7 +165,11 @@ export class Bundler extends Context.Service<
           install: RESOLVE_ROOT,
         }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
 
-        const config = (mode: Mode, cache: OptimizerCache): InlineConfig => ({
+        const config = (
+          mode: Mode,
+          cache: OptimizerCache,
+          embedder: Option.Option<Embedder>
+        ): InlineConfig => ({
           root: deck.root,
           configFile: false,
           envDir: false,
@@ -146,9 +186,10 @@ export class Bundler extends Context.Service<
               root: deck.root,
               runtimeRoot,
               resolveAnchor: RESOLVE_ANCHOR,
+              embedder,
               title: () => run(Effect.map(deck.load, (loaded) => loaded.manifest.title)),
               firstPaint: () => run(deckFirstPaint),
-              manifestModule: () => run(manifestModule(mode, compileOnce)),
+              manifestModule: () => run(manifestModule(mode, compileOnce, embedder)),
               compileSlide: (file, text) =>
                 run(
                   Effect.map(compileOnce(file, text, mode), (slide) => ({
@@ -175,10 +216,11 @@ export class Bundler extends Context.Service<
         return Bundler.of({
           firstPaint: (manifest) => Effect.flatMap(fuse, (theme) => firstPaint(theme, manifest)),
           compile: (id, text) => compileOnce(path.join(deck.root, "slides", `${id}.mdx`), text, "production"),
-          dev: Effect.fn("Bundler.dev")(function* (port) {
+          dev: Effect.fn("Bundler.dev")(function* (options) {
             yield* deckFirstPaint;
             const cache = yield* cacheDir;
-            const devConfig = config("development", cache);
+            const embedder = options._tag === "Embedded" ? Option.some(options.embedder) : Option.none();
+            const devConfig = config("development", cache, embedder);
             // The finalizer holds the server from its creation, so a failed `listen` still closes
             // the watcher and the optimizer that `createServer` started.
             const server = yield* Effect.acquireRelease(
@@ -186,13 +228,7 @@ export class Bundler extends Context.Service<
                 try: () =>
                   createServer({
                     ...devConfig,
-                    server: {
-                      ...devConfig.server,
-                      ...Option.match(port, {
-                        onNone: () => ({}),
-                        onSome: (value) => ({ port: value, strictPort: true }),
-                      }),
-                    },
+                    server: { ...devConfig.server, ...serverOptions(options) },
                   }),
                 catch: bundlerFailed("create the dev server"),
               }),
@@ -201,17 +237,32 @@ export class Bundler extends Context.Service<
               // This matches vitejs/vite#22934: the optimizer leaves a discovered dependency's
               // processing promise unsettled on close. Its fix, vitejs/vite#23567, came after 8.3.0.
               (created) =>
-                Effect.promise(() => created.close()).pipe(Effect.timeout("3 seconds"), Effect.ignore)
+                Effect.promise(() => created.close()).pipe(Effect.timeout(VITE_CLOSE_TIMEOUT), Effect.ignore)
             );
-            yield* Effect.tryPromise({
-              try: () => server.listen(),
-              catch: bundlerFailed("start the dev server"),
-            });
-            const url = server.resolvedUrls?.local[0];
-            if (url === undefined) {
-              return yield* new BundlerFailed({ message: "The dev server started without a local address." });
-            }
-            return { url };
+            const url =
+              options._tag === "Standalone"
+                ? yield* listen(server)
+                : yield* serveOn(server, options.listener);
+            const changes = Stream.callback<string>((queue) =>
+              Effect.acquireRelease(
+                Effect.sync(() => {
+                  const emit = (file: string) => {
+                    Queue.offerUnsafe(queue, file);
+                  };
+                  for (const event of WATCH_EVENTS) {
+                    server.watcher.on(event, emit);
+                  }
+                  return emit;
+                }),
+                (emit) =>
+                  Effect.sync(() => {
+                    for (const event of WATCH_EVENTS) {
+                      server.watcher.off(event, emit);
+                    }
+                  })
+              )
+            );
+            return { url, changes };
           }),
           build: Effect.fn("Bundler.build")(function* (out) {
             yield* deckFirstPaint;
@@ -222,7 +273,7 @@ export class Bundler extends Context.Service<
             yield* Effect.tryPromise({
               try: () =>
                 viteBuild({
-                  ...config("production", cache),
+                  ...config("production", cache, Option.none()),
                   // Rolldown's build reporter writes its progress straight to stdout, past the
                   // custom logger, and stdout carries the CLI's result. Below info it stays quiet;
                   // warnings and errors still reach stderr.
@@ -249,6 +300,66 @@ export class Bundler extends Context.Service<
     );
 }
 
+/** The watcher events `DevServer.changes` reports. */
+const WATCH_EVENTS = ["add", "change", "unlink"] as const;
+
+/** How long the dev server's release waits for Vite's `close`. */
+export const VITE_CLOSE_TIMEOUT = Duration.seconds(3);
+
+/** Vite's server options for each way `dev` serves. */
+function serverOptions(options: DevOptions): ServerOptions {
+  switch (options._tag) {
+    case "Standalone":
+      return Option.match(options.port, {
+        onNone: () => ({}),
+        onSome: (port) => ({ port, strictPort: true }),
+      });
+    case "Embedded":
+      return {
+        middlewareMode: true,
+        // The HMR socket shares the host's listener, so the page reaches it at its own origin.
+        ws: { server: options.listener },
+        // Vite answers cross-origin reads from any localhost page by default. A framed deck needs
+        // none: the studio talks to it only through the preview bridge.
+        cors: false,
+      };
+  }
+}
+
+/** Start Vite's own listener and return its address. */
+const listen = Effect.fnUntraced(function* (server: ViteDevServer) {
+  yield* Effect.tryPromise({
+    try: () => server.listen(),
+    catch: bundlerFailed("start the dev server"),
+  });
+  const url = server.resolvedUrls?.local[0];
+  if (url === undefined) {
+    return yield* new BundlerFailed({ message: "The dev server started without a local address." });
+  }
+  return url;
+});
+
+/** A listening TCP server's address; a pipe's path or a server not listening has none. */
+const decodeTcpAddress = Schema.decodeUnknownOption(Schema.Struct({ port: Schema.Int }));
+
+/** Hand the host's listener's requests to Vite until the scope closes, and return its address. */
+const serveOn = Effect.fnUntraced(function* (server: ViteDevServer, listener: HttpServer) {
+  const address = decodeTcpAddress(listener.address());
+  if (Option.isNone(address)) {
+    return yield* new BundlerFailed({ message: "The host's listener is not listening on a TCP port." });
+  }
+  yield* Effect.acquireRelease(
+    Effect.sync(() => {
+      listener.on("request", server.middlewares);
+    }),
+    () =>
+      Effect.sync(() => {
+        listener.off("request", server.middlewares);
+      })
+  );
+  return `http://127.0.0.1:${String(address.value.port)}/`;
+});
+
 /** What the manifest emits for a slide besides its id and import, as one comparable string. */
 function manifestEntry(metadata: SlideMetadata): string {
   return `title: ${JSON.stringify(Option.getOrNull(metadata.title))}, layout: ${JSON.stringify(metadata.layout)}, steps: ${String(metadata.steps)}`;
@@ -265,7 +376,8 @@ function manifestModule(
     file: string,
     text: string,
     mode: Mode
-  ) => Effect.Effect<CompiledSlide, SlideCompileFailed | SlideFrontmatterInvalid>
+  ) => Effect.Effect<CompiledSlide, SlideCompileFailed | SlideFrontmatterInvalid>,
+  embedder: Option.Option<Embedder>
 ) {
   return Effect.gen(function* () {
     const deck = yield* DeckFiles;
@@ -279,7 +391,7 @@ function manifestModule(
       slides.push({ id, entry });
     }
     return {
-      source: manifestSource(loaded.manifest, slides),
+      source: manifestSource(loaded.manifest, slides, embedder),
       slides: entries,
     } satisfies DeckManifestModule;
   });
@@ -288,7 +400,8 @@ function manifestModule(
 /** The manifest module's source, from the deck's settings and each slide's entry. */
 function manifestSource(
   manifest: { readonly title: string; readonly aspect: string },
-  slides: ReadonlyArray<{ readonly id: string; readonly entry: string }>
+  slides: ReadonlyArray<{ readonly id: string; readonly entry: string }>,
+  embedder: Option.Option<Embedder>
 ): string {
   const items = slides.map(
     ({ id, entry }) =>
@@ -297,6 +410,7 @@ function manifestSource(
   return `export default {
   title: ${JSON.stringify(manifest.title)},
   aspect: ${JSON.stringify(manifest.aspect)},
+  embedder: ${JSON.stringify(Option.getOrNull(embedder))},
   slides: [
     ${items.join(",\n    ")}
   ],

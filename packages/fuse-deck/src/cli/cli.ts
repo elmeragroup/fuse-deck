@@ -272,7 +272,7 @@ const dev = Command.make(
   },
   Effect.fn("cli.dev")(function* ({ port }) {
     const bundler = yield* Bundler;
-    const server = yield* bundler.dev(port);
+    const server = yield* bundler.dev({ _tag: "Standalone", port });
     yield* reply({
       document: { _tag: "DevServerReady", url: server.url },
       text: `Serving the deck at ${server.url}. Press Ctrl-C to stop.`,

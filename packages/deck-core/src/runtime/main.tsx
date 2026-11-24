@@ -21,6 +21,6 @@ if (container === null) {
 
 createRoot(container).render(
   <StrictMode>
-    <Deck deck={{ title: manifest.title, aspect: manifest.aspect, slides }} />
+    <Deck deck={{ title: manifest.title, aspect: manifest.aspect, embedder: manifest.embedder, slides }} />
   </StrictMode>
 );

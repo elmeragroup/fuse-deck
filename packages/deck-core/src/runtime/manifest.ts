@@ -19,9 +19,19 @@ export type ManifestSlide = {
   readonly load: () => Promise<{ readonly default: ComponentType<{ readonly components: MdxComponents }> }>;
 };
 
+/** The page that frames the deck in the studio's preview, as the studio named it. */
+export type ManifestEmbedder = {
+  /** The framing page's origin. */
+  readonly origin: string;
+  /** The studio's id for this opening of the deck. */
+  readonly scopeId: string;
+};
+
 /** The deck's settings and its slides in order. */
 export type DeckManifest = {
   readonly title: string;
   readonly aspect: "16:9" | "4:3";
+  /** The studio page that frames the deck, or null when no studio served it. */
+  readonly embedder: ManifestEmbedder | null;
   readonly slides: readonly ManifestSlide[];
 };

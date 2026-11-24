@@ -10,8 +10,9 @@ import {
 import type { ComponentType } from "react";
 
 import type { LayoutName } from "../deck/vocabulary.ts";
+import { bridgeParent, reportPosition, requestedPosition } from "./bridge.ts";
 import { LAYOUTS } from "./layouts.tsx";
-import type { MdxComponents } from "./manifest.ts";
+import type { ManifestEmbedder, MdxComponents } from "./manifest.ts";
 import { Morph } from "./morph.tsx";
 import { fromHash, moveForKey, moveTo, toHash } from "./position.ts";
 import type { Position } from "./position.ts";
@@ -33,6 +34,8 @@ export type LoadedSlide = {
 export type LoadedDeck = {
   readonly title: string;
   readonly aspect: "16:9" | "4:3";
+  /** The studio page that frames the deck, which turns on the preview bridge, or null. */
+  readonly embedder: ManifestEmbedder | null;
   readonly slides: readonly LoadedSlide[];
 };
 
@@ -51,6 +54,8 @@ type Source = "navigation" | "address";
  * queues and batches presses that arrive while one runs. A step change is a synchronous update, so
  * it never starts a view transition. The URL hash mirrors the position; the first position comes
  * from the hash before the first paint, and Back and Forward animate only when the slide changes.
+ * In the studio's preview it reports each committed position to the studio and goes where the
+ * studio asks.
  */
 export function Deck({ deck }: { readonly deck: LoadedDeck }) {
   const [current, setCurrent] = useState<{ readonly position: Position; readonly source: Source }>(() => ({
@@ -65,6 +70,14 @@ export function Deck({ deck }: { readonly deck: LoadedDeck }) {
   useLayoutEffect(() => {
     committed.current = position;
   }, [position]);
+
+  // After each committed change, and once after every load.
+  useEffect(() => {
+    const parent = bridgeParent(deck.embedder);
+    if (parent !== null) {
+      reportPosition(parent, position, deck.slides);
+    }
+  }, [deck.embedder, position, deck.slides]);
 
   useEffect(() => {
     const go = (next: Position, source: Source) => {
@@ -101,13 +114,22 @@ export function Deck({ deck }: { readonly deck: LoadedDeck }) {
         go(next, "address");
       });
     };
+    const parent = bridgeParent(deck.embedder);
+    const onMessage = (event: MessageEvent) => {
+      const next = parent === null ? null : requestedPosition(parent, event, deck.slides);
+      if (next !== null) {
+        go(next, "navigation");
+      }
+    };
     window.addEventListener("keydown", onKey);
     window.addEventListener("popstate", onPopState);
+    window.addEventListener("message", onMessage);
     return () => {
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("popstate", onPopState);
+      window.removeEventListener("message", onMessage);
     };
-  }, [deck.slides]);
+  }, [deck.slides, deck.embedder]);
 
   useEffect(() => {
     const hash = toHash(current.position, deck.slides);

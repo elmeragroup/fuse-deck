@@ -7,6 +7,7 @@
   "type": "module",
   "exports": {
     "./bundler/build-output": "./src/bundler/build-output.ts",
+    "./bundler/fuse-theme": "./src/bundler/fuse-theme.ts",
     "./bundler/bundler": "./src/bundler/bundler.ts",
     "./bundler/mdx": "./src/bundler/mdx.ts",
     "./deck/check": "./src/deck/check.ts",
