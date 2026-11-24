@@ -1,14 +1,14 @@
 {
   "extends": ["//"],
   "tasks": {
-    // The process tests spawn the built bin, the file the packed tarball ships, so the suite runs
-    // against this package's build rather than Fuse's.
+    // The process tests spawn the built bin, the file the packed tarball ships.
     "test": {
       "dependsOn": ["build"]
     },
-    // The packed smoke test installs this package's tarball beside Fuse's, outside the workspace.
+    // The packed smoke test installs this package's tarball beside Fuse's published one, outside
+    // the workspace.
     "test:packed-consumer": {
-      "dependsOn": ["pack", "@elmeragroup/fuse#pack"]
+      "dependsOn": ["pack"]
     }
   }
 }

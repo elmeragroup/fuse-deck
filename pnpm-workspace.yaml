@@ -1,0 +1,70 @@
+packages:
+  - apps/*
+  - packages/*
+  - tooling/*
+
+# Every version is exact: a range could resolve a release younger than minimumReleaseAge. Bump an
+# entry deliberately, in its own PR.
+catalog:
+  # Workspace tooling.
+  # First-party lint plugins (`@elmeragroup/internal/oxlint*`); bump with the exclude entry below.
+  "@elmeragroup/internal": 0.2.0-canary.23
+  # The version @elmeragroup/internal brings, so one copy installs.
+  "@oxlint/plugins": 1.93.0
+  # The Effect language service and the Effect-patched oxlint that `pnpm lint:effect` runs.
+  "@effect/tsgo": 0.70.0
+  "@types/node": 26.6.6
+  csstype: 3.2.3
+  eslint-plugin-turbo: 2.10.12
+  oxfmt: 0.74.0
+  oxlint: 1.93.0
+  turbo: 2.10.12
+  # tsrs runs every type-check and the type-aware lint rules (tsrs-lint). It pins TypeScript
+  # 7.1-beta semantics; typescript stays installed for tsdown. Bump both together.
+  tsrs: 0.25.0-ts7.1.0-beta
+  typescript: 7.1.0-beta
+  tsdown: 0.23.2
+  vitest: 5.0.0
+  playwright: 1.63.0
+  fast-check: 4.10.2
+
+  # Effect. Keep the family on one version.
+  effect: 4.1.4
+  "@effect/platform-node": 4.1.4
+  "@effect/vitest": 4.1.4
+
+  # The deck pipeline. Vite is exact because fuse-deck calls its experimental `runnerImport`, and
+  # the packed smoke test is the tripwire for a change there.
+  vite: 8.3.0
+  # JSX and Fast Refresh for slides; 6.3.0 supports Vite 8.
+  "@vitejs/plugin-react": 6.3.0
+  "@mdx-js/mdx": 3.1.1
+  # The MDX JSX node types the step pass walks, at the release @mdx-js/mdx 3.1.1 resolves.
+  mdast-util-mdx-jsx: 3.2.0
+  "@types/mdast": 4.0.4
+  remark-frontmatter: 5.0.0
+  yaml: 2.9.1
+
+  # Fuse, the design system every deck renders with; bump with the exclude entry below.
+  "@elmeragroup/fuse": 0.1.0-canary.213
+  react: 19.3.0
+  react-dom: 19.3.0
+  "@types/react": 19.3.0
+  "@types/react-dom": 19.3.0
+
+autoInstallPeers: true
+
+overrides:
+  # @effect/platform-node declares a caret range here, which resolves to a release whose
+  # effect peer is newer than the catalog's effect. Keep the whole Effect family on one version.
+  "@effect/platform-node-shared": 4.1.4
+
+allowBuilds:
+  "@parcel/watcher": true
+
+minimumReleaseAge: 4320
+
+minimumReleaseAgeExclude:
+  # Canary lines of in-house packages; each bump names the exact version.
+  - "@elmeragroup/internal@0.2.0-canary.23"
+  - "@elmeragroup/fuse@0.1.0-canary.213"

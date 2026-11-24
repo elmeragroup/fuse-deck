@@ -1,8 +1,8 @@
 /**
  * Fuse's theme entry, loaded through Vite. Node cannot load Fuse's TSX source, and the first-paint
  * bootstrap must be the text of Fuse's own function, so fuse-deck never imports Fuse in Node. It
- * resolves `@elmeragroup/fuse/theme` from this package, which gives `src/theme.ts` in the checkout
- * and the built file in an install, and imports it with Vite's `runnerImport`.
+ * resolves `@elmeragroup/fuse/theme` from this package, which gives Fuse's built theme entry, and
+ * imports it with Vite's `runnerImport`.
  *
  * `runnerImport` resolves from `process.cwd()` unless it gets a root, and a deck usually sits outside
  * the install tree, so the root is the package directory. Vite then resolves Fuse's imports the same

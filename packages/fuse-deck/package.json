@@ -33,13 +33,13 @@
     "yaml": "catalog:"
   },
   "peerDependencies": {
-    "@elmeragroup/fuse": "workspace:^",
+    "@elmeragroup/fuse": "^0.1.0-canary.213",
     "react": "^19.3",
     "react-dom": "^19.3"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "@elmeragroup/fuse": "workspace:*",
+    "@elmeragroup/fuse": "catalog:",
     "@elmeragroup/typescript-config": "workspace:*",
     "@types/mdast": "catalog:",
     "@types/node": "catalog:",

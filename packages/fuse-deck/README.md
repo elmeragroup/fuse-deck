@@ -5,8 +5,7 @@ Builds slide decks from MDX, themed with Fuse. A deck is a directory with a `dec
 step, and checks it. Its output is written for agents first: `--json` prints exactly one JSON
 document per run.
 
-The package is private and packable. It is developed here and moves to its own repository before it
-is published, so Fuse stays the one public package.
+The package is private and packable, and is not yet published to npm.
 
 ## Use
 
@@ -25,8 +24,8 @@ A slide change is a React view transition: the old slide blurs out and the new o
 navigate; the URL hash names the slide and step, so links and Back work.
 
 From this checkout, `pnpm exec node packages/fuse-deck/src/bin.ts <command>` runs the CLI from
-source through Node's type stripping. It serves the built runtime in `dist/runtime`, so build first
-with `pnpm exec turbo run build --filter=@elmeragroup/fuse-deck`, which builds Fuse before it.
+source through Node's type stripping. It serves the built runtime in `dist/runtime`, so run
+`pnpm build` first.
 `skill/SKILL.md` ships in the package for agents, and `describe` prints its path.
 
 The package exports no modules (`"exports": {}`). The bin and Vite reach `dist/` by file path, so a
@@ -51,10 +50,12 @@ Fuse and the deck manifest external.
 
 ## Tests
 
-Run the suites through turbo, which builds Fuse and this package first:
+Run the suites from the repository root, which builds this package first:
 
 ```sh
-pnpm exec turbo run build test test:browser --filter=@elmeragroup/fuse-deck
+pnpm test                  # unit and process tests
+pnpm test:browser          # a built deck driven in Chromium
+pnpm test:packed-consumer  # the packed tarball installed with npm outside the workspace
 ```
 
 The process tests spawn `dist/bin.mjs`, the file the packed tarball ships, and the browser suite

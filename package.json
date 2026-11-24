@@ -1,0 +1,43 @@
+{
+  "name": "fuse-deck-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "turbo run build",
+    "check": "oxfmt --check && turbo run //#lint:oxlint //#lint:effect type-check test",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "lint": "turbo run //#lint:oxlint //#lint:effect",
+    "lint:fix": "pnpm run lint:oxlint --fix",
+    "lint:oxlint": "OXLINT_TSGOLINT_PATH=node_modules/.bin/tsrs-lint oxlint . --deny-warnings --report-unused-disable-directives-severity=error",
+    "lint:effect": "effect-tsgo --tsrs-lint=0.25.0-ts7.1.0-beta oxlint -c .oxlintrc.effect.json . --deny-warnings",
+    "test": "turbo run test",
+    "test:browser": "turbo run test:browser",
+    "test:packed-consumer": "turbo run test:packed-consumer",
+    "type-check": "turbo run type-check"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "catalog:",
+    "@elmeragroup/internal": "catalog:",
+    "@elmeragroup/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint-plugin-turbo": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "playwright": "catalog:",
+    "tsrs": "catalog:",
+    "turbo": "catalog:",
+    "typescript": "catalog:"
+  },
+  "engines": {
+    "node": ">=26.13.0 <27"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "26.13.0",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@11.20.0"
+}

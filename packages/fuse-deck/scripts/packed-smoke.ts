@@ -1,6 +1,6 @@
 /**
  * The packed smoke test: fuse-deck's portability gate. It installs the packed fuse-deck and the
- * packed Fuse with npm in a directory outside the workspace, creates a deck in another directory
+ * published Fuse release the workspace pins with npm in a directory outside the workspace, creates a deck in another directory
  * outside that install, gives a slide a Fuse component, and runs `create`, `describe`, `slides add`,
  * `check --json` and `build` through the `fuse-deck` command npm installed. It checks that the
  * skill `describe` names exists, and that the package refuses a deep import. It then runs the built
@@ -11,7 +11,7 @@
  * Without a workspace, Fuse resolves to its built `dist` and React to the consumer's install, so
  * this is the check that fuse-deck's anchored `runnerImport` and its resolver work when installed.
  *
- * Usage: node scripts/packed-smoke.ts (after `pack` here and in packages/fuse)
+ * Usage: node scripts/packed-smoke.ts (after `pack`)
  */
 
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
@@ -39,7 +39,6 @@ class SmokeFailed extends Schema.TaggedError<SmokeFailed>()("SmokeFailed", {
 }) {}
 
 const packageRoot = path.resolve(import.meta.dirname, "..");
-const fuseRoot = path.resolve(packageRoot, "../fuse");
 
 /** Mirrors `minimumReleaseAge` in pnpm-workspace.yaml, so npm resolves what the lockfile could. */
 const RELEASE_AGE = Duration.minutes(4320);
@@ -144,9 +143,21 @@ function runBootstrap(source: string, stored: string | null, systemDark: boolean
 const smoke = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const deckTarball = yield* tarball(packageRoot);
-  const fuseTarball = yield* tarball(fuseRoot);
   const consumer = yield* fs.makeTempDirectoryScoped({ directory: tmpdir(), prefix: "fuse-deck-packed-" });
   const decks = yield* fs.makeTempDirectoryScoped({ directory: tmpdir(), prefix: "fuse-deck-decks-" });
+
+  // The Fuse release the workspace tests against, fetched as a tarball first: pnpm-workspace.yaml
+  // exempts that in-house canary from the release age, and the install's `--before` would not.
+  const fuseTarballs = yield* fs.makeTempDirectoryScoped({ directory: tmpdir(), prefix: "fuse-deck-fuse-" });
+  const fuseVersion = yield* installedVersion("@elmeragroup/fuse");
+  const fuseTarball = path.join(
+    fuseTarballs,
+    (yield* run(
+      "npm",
+      ["pack", `@elmeragroup/fuse@${fuseVersion}`, "--pack-destination", fuseTarballs, "--silent"],
+      fuseTarballs
+    )).trim()
+  );
 
   // The consumer installs the React this workspace tests against.
   const react = yield* installedVersion("react");

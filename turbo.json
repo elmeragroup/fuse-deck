@@ -1,0 +1,38 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "stream",
+  "globalEnv": ["NODE_ENV"],
+  "tasks": {
+    // Oxlint reads every package's files, and turbo documents a task's default inputs only as its
+    // package's own files, so neither pass is cached.
+    "//#lint:oxlint": {
+      "cache": false
+    },
+    "//#lint:effect": {
+      "cache": false
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "pack": {
+      "dependsOn": ["build"],
+      "outputs": [".artifacts/**"]
+    },
+    "type-check": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"]
+    },
+    // Browser suites and the packed tier launch Chromium, so they stay out of `check` and run in
+    // their own CI job.
+    "test:browser": {
+      "cache": false,
+      "dependsOn": ["build"]
+    },
+    "test:packed-consumer": {
+      "cache": false
+    }
+  }
+}

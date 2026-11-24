@@ -1,0 +1,16 @@
+.DS_Store
+node_modules/
+.pnpm-store/
+.turbo/
+dist/
+.artifacts/
+coverage/
+.cache/
+*.tsbuildinfo
+.env
+# Playwright output.
+test-results/
+playwright-report/
+# Reference clones and local scratch output.
+.ref/
+.scratch/

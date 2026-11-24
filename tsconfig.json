@@ -1,0 +1,9 @@
+{
+  "extends": "@elmeragroup/typescript-config/base.json",
+  // The root program holds every file no workspace tsconfig includes, such as the deck runtime and
+  // the tests, which have their own tsconfigs that type-aware lint does not discover. Lint reads a
+  // file with the options of the program that holds it, so this gives them the base options.
+  "compilerOptions": { "allowJs": true },
+  // Build output is not source, and a build beside lint rewrites it mid-read.
+  "exclude": ["**/dist"]
+}
