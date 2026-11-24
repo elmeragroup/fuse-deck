@@ -1,0 +1,14 @@
+{
+  "extends": "@elmeragroup/typescript-config/base.json",
+  "compilerOptions": {
+    // Upstream's compiler options (t3code tsconfig.base.json), so the vendored code checks as it did there.
+    "lib": ["ESNext"],
+    "resolveJsonModule": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "useDefineForClassFields": true
+  },
+  "include": ["src", "scripts", "test", "vitest.config.ts"]
+}

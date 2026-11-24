@@ -29,9 +29,11 @@ catalog:
   fast-check: 4.10.2
 
   # Effect. Keep the family on one version.
-  effect: 4.1.4
-  "@effect/platform-node": 4.1.4
-  "@effect/vitest": 4.1.4
+  effect: 4.1.5
+  "@effect/platform-node": 4.1.5
+  "@effect/vitest": 4.1.5
+  # effect-acp's schema generator (packages/effect-acp/scripts/generate.ts).
+  "@effect/openapi-generator": 4.1.5
 
   # The deck pipeline. Vite is exact because fuse-deck calls its experimental `runnerImport`, and
   # the packed smoke test is the tripwire for a change there.
@@ -66,7 +68,7 @@ autoInstallPeers: true
 overrides:
   # @effect/platform-node declares a caret range here, which resolves to a release whose
   # effect peer is newer than the catalog's effect. Keep the whole Effect family on one version.
-  "@effect/platform-node-shared": 4.1.4
+  "@effect/platform-node-shared": 4.1.5
 
 allowBuilds:
   "@parcel/watcher": true

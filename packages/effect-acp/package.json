@@ -1,0 +1,36 @@
+{
+  "name": "@elmeragroup/effect-acp",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An Effect client and agent for the Agent Client Protocol, vendored from t3code's packages/effect-acp. Never published: the studio backend's build inlines it.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./client": "./src/client.ts",
+    "./agent": "./src/agent.ts",
+    "./schema": "./src/schema.ts",
+    "./compat": "./src/compat.ts",
+    "./rpc": "./src/rpc.ts",
+    "./protocol": "./src/protocol.ts",
+    "./errors": "./src/errors.ts",
+    "./schema-v1": "./src/_generated/schema-v1.gen.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "vitest run --project unit",
+    "type-check": "tsrs --noEmit",
+    "generate": "node scripts/generate.ts"
+  },
+  "dependencies": {
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/openapi-generator": "catalog:",
+    "@effect/platform-node": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@elmeragroup/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "tsrs": "catalog:",
+    "vitest": "catalog:"
+  }
+}

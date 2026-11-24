@@ -55,6 +55,10 @@
     "apps/desktop/src/app/DesktopLifecycle.ts",
     "apps/desktop/src/app/DesktopShutdown.ts",
     "apps/desktop/src/app/DesktopState.ts",
-    "apps/desktop/src/app/stdioErrors.ts"
+    "apps/desktop/src/app/stdioErrors.ts",
+    // Vendored from t3code with its formatting (packages/effect-acp/README.md).
+    "packages/effect-acp/src/**",
+    "packages/effect-acp/test/**",
+    "packages/effect-acp/scripts/**"
   ]
 }
