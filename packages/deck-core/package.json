@@ -1,0 +1,58 @@
+{
+  "name": "@elmeragroup/deck-core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The deck model, the Vite bundler and the browser runtime behind fuse-deck. Never published: fuse-deck's build inlines it.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./bundler/build-output": "./src/bundler/build-output.ts",
+    "./bundler/bundler": "./src/bundler/bundler.ts",
+    "./bundler/mdx": "./src/bundler/mdx.ts",
+    "./deck/check": "./src/deck/check.ts",
+    "./deck/deck-files": "./src/deck/deck-files.ts",
+    "./deck/deck-manifest": "./src/deck/deck-manifest.ts",
+    "./deck/describe": "./src/deck/describe.ts",
+    "./deck/mdx-text": "./src/deck/mdx-text.ts",
+    "./deck/scaffold": "./src/deck/scaffold.ts",
+    "./deck/slide-id": "./src/deck/slide-id.ts",
+    "./deck/vocabulary": "./src/deck/vocabulary.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run --project unit",
+    "type-check": "tsrs --noEmit && tsrs --noEmit -p tsconfig.runtime.json && tsrs --noEmit -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@mdx-js/mdx": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "effect": "catalog:",
+    "remark-frontmatter": "catalog:",
+    "vite": "catalog:",
+    "yaml": "catalog:"
+  },
+  "peerDependencies": {
+    "@elmeragroup/fuse": "^0.1.0-canary.213",
+    "react": "^19.3",
+    "react-dom": "^19.3"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@elmeragroup/fuse": "catalog:",
+    "@elmeragroup/typescript-config": "workspace:*",
+    "@types/mdast": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "fast-check": "catalog:",
+    "mdast-util-mdx-jsx": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tsdown": "catalog:",
+    "tsrs": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

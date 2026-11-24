@@ -4,6 +4,6 @@
     // DOM types the callbacks Playwright runs inside the page.
     "lib": ["ESNext", "DOM"]
   },
-  "include": ["test", "src/runtime/position.ts"],
+  "include": ["test"],
   "exclude": []
 }

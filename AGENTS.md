@@ -13,9 +13,15 @@ services with their layers, and `Schema.TaggedError` failures. `pnpm lint:effect
 every rule that file sets to error, so change both together. A directive that turns a rule off
 carries a `-- reason`.
 
-The browser runtime in `src/runtime` is plain React 19 with no Effect and no Node API. Slide motion
-uses React's `<ViewTransition>`; keep it to the slide change, `<Step>` and `<Morph>`, and keep the
-reduced-motion fallbacks in `deck.css`.
+`packages/deck-core` holds the deck model, the bundler and the browser runtime. It is private and
+never published: fuse-deck's build inlines it, so a runtime dependency it adds goes into
+fuse-deck's `dependencies` too, or the build fails. deck-core takes the runtime directory and the
+skill path from its host and resolves React, React DOM, Fuse and Vite's anchors from the running
+module.
+
+The browser runtime in `packages/deck-core/src/runtime` is plain React 19 with no Effect and no
+Node API. Slide motion uses React's `<ViewTransition>`; keep it to the slide change, `<Step>` and
+`<Morph>`, and keep the reduced-motion fallbacks in `deck.css`.
 
 Fuse is a published dependency. Use it through its public subpaths only. When a slide shows a Fuse
 bug or a missing theme role, fix it in Fuse and bump the catalog pin here.
@@ -30,7 +36,7 @@ the tests together.
 
 Assert behavior against independently defined expectations. Never compute an expected result with
 the code under test. A test that flakes is made deterministic or deleted in the same change. Put
-each test in the cheapest project that can fail: `unit` for the deck model and the spawned CLI,
+each test in the cheapest project that can fail: `unit` for the deck model (in deck-core) and the spawned CLI,
 `browser` for a built deck in Chromium, the packed smoke test for the installed tarball, and
 `test:packaged` in `apps/desktop` for the packaged desktop app.
 

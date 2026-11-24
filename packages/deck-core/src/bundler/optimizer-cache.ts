@@ -1,6 +1,6 @@
 /**
  * Where Vite keeps the deck's optimized dependencies. Vite keys that cache by its config and by the
- * lockfile it finds at or above the deck. The deck's dependencies come from fuse-deck's install,
+ * lockfile it finds at or above the deck. The deck's dependencies come from the bundler's install,
  * which may sit anywhere and leaves no lockfile above the deck, so after the install changes Vite
  * would keep serving the dependencies it optimized from the old one. Each install therefore gets its
  * own cache directory, named after a fingerprint of the files the optimizer reads from and of the
@@ -16,7 +16,7 @@ import * as Option from "effect/Option";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
-import type { DependencyPackage } from "../package-root.ts";
+import type { DependencyPackage } from "./resolve-root.ts";
 
 /** The directory, inside the deck, that holds one optimizer cache per install. */
 const CACHES = path.join(".fuse-deck", "vite");
@@ -36,22 +36,30 @@ export type OptimizerCache = {
   readonly lockfile: Option.Option<string>;
 };
 
+/** What the optimizer reads from, as installed. */
+export type OptimizerInputs = {
+  /** React, React DOM and Fuse. */
+  readonly packages: readonly DependencyPackage[];
+  /** The runtime's `main.js`, which imports them. The runtime directory holds no `package.json`. */
+  readonly runtimeEntry: string;
+  /** A directory in the install; the nearest lockfile at or above it is the install's. */
+  readonly install: string;
+};
+
 /**
  * The optimizer cache for the deck and the packages its page imports. It names the same directory
- * while the install is unchanged, and another one once a package is reinstalled, moved or upgraded,
- * or the lockfile changes: the name hashes each `package.json`'s bytes, the identity, size and times
- * of each `package.json` and entry file, and the lockfile's bytes. A file that cannot be read counts
- * as missing.
+ * while the install is unchanged, and another one once a package or the runtime is reinstalled,
+ * moved or upgraded, or the lockfile changes: the name hashes each `package.json`'s bytes, the
+ * identity, size and times of each `package.json` and entry file, the runtime entry's identity,
+ * size, times and bytes, and the lockfile's bytes. A file that cannot be read counts as missing.
  *
  * @param deckRoot - The deck directory.
- * @param packages - React, React DOM, Fuse and fuse-deck, as installed.
- * @param install - fuse-deck's package directory; the nearest lockfile at or above it is the install's.
+ * @param inputs - The packages, the runtime entry and the install.
  * @returns The cache directory and the lockfile it includes.
  */
 export const optimizerCache = Effect.fn("optimizerCache")(function* (
   deckRoot: string,
-  packages: readonly DependencyPackage[],
-  install: string
+  { packages, runtimeEntry, install }: OptimizerInputs
 ) {
   const fs = yield* FileSystem.FileSystem;
   const stamp = (file: string) =>
@@ -75,6 +83,8 @@ export const optimizerCache = Effect.fn("optimizerCache")(function* (
     hash.update(yield* bytes(manifest));
     hash.update(yield* stamp(entry));
   }
+  hash.update(yield* stamp(runtimeEntry));
+  hash.update(yield* bytes(runtimeEntry));
   const lockfile = yield* lockfileAbove(fs, install);
   if (Option.isSome(lockfile)) {
     hash.update(lockfile.value);

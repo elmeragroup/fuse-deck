@@ -7,10 +7,11 @@ static files. Agents drive it: every command takes `--json` and prints exactly o
 
 fuse-deck is in development and not yet published to npm.
 
-| Path                 | What it is                                                      |
-| -------------------- | --------------------------------------------------------------- |
-| `packages/fuse-deck` | The `fuse-deck` command, the deck runtime and the shipped skill |
-| `tooling/typescript` | The shared tsconfig base and the Effect language-service preset |
+| Path                 | What it is                                                                 |
+| -------------------- | -------------------------------------------------------------------------- |
+| `packages/fuse-deck` | The `fuse-deck` command and the shipped skill                              |
+| `packages/deck-core` | The deck model, the Vite bundler and the browser runtime; private, inlined |
+| `tooling/typescript` | The shared tsconfig base and the Effect language-service preset            |
 
 ## Develop
 

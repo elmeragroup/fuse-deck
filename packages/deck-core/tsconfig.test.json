@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["test", "src/runtime/position.ts"],
+  "exclude": []
+}

@@ -210,7 +210,7 @@
           // `make` constructs the same instance.
           "newSchemaClass": "off",
 
-          // A service is keyed `<package>/<Service>`, as `@elmeragroup/fuse-deck/DeckFiles`. Every keyPatterns formula
+          // A service is keyed `<package>/<Service>`, as `@elmeragroup/deck-core/DeckFiles`. Every keyPatterns formula
           // of 0.70.0 puts the file's path between the two, and a key is the service's runtime identity.
           "deterministicKeys": "off",
 
@@ -226,7 +226,8 @@
           "yieldInCallArgument": "off",
 
           // Maintainers. It checks a package's exported types for less stable Effect APIs. fuse-deck exports no
-          // modules (`"exports": {}`); its command line is its only public face.
+          // modules (`"exports": {}`); its command line is its only public face. deck-core's exports are private
+          // to the workspace and inlined into fuse-deck.
           "apiStabilityLeak": "off"
         }
       }

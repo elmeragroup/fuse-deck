@@ -121,7 +121,7 @@ export class DeckFiles extends Context.Service<
       id: SlideId
     ) => Effect.Effect<DeckManifest.DeckManifest, DeckEditError | DeckManifest.SlideNotInDeck>;
   }
->()("@elmeragroup/fuse-deck/DeckFiles") {
+>()("@elmeragroup/deck-core/DeckFiles") {
   /**
    * The deck in `start` or the nearest directory above it that holds a `deck.json`.
    *

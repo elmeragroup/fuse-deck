@@ -1,0 +1,16 @@
+{
+  "extends": "@elmeragroup/typescript-config/base.json",
+  "compilerOptions": {
+    // The deck model and the bundler run in Node: no DOM types.
+    "lib": ["ESNext"],
+    // fuse-deck runs its CLI from source by stripping types, and this package's modules with it,
+    // which cannot run enums or parameter properties.
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true
+  },
+  "include": ["src", "tsdown.config.ts", "vitest.config.ts"],
+  // The browser runtime has tsconfig.runtime.json, and the tests tsconfig.test.json.
+  "exclude": ["src/runtime"]
+}
