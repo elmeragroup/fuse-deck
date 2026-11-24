@@ -52,6 +52,9 @@ catalog:
   "@types/react": 19.3.0
   "@types/react-dom": 19.3.0
 
+  # The studio renderer's router, as t3code's apps/web uses it.
+  "@tanstack/react-router": 1.170.46
+
   # The studio's desktop shell, at the releases t3code's apps/desktop runs (t3code 2fe7febc).
   electron: 44.10.1
   electron-builder: 26.16.1

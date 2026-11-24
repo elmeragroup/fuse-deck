@@ -21,13 +21,14 @@ The workspace pins Node 26.13 and pnpm 11 in `package.json`; pnpm installs that 
 pnpm install
 pnpm build                 # the CLI and the browser runtime
 pnpm check                 # format, lint, type-check and the unit tests
-pnpm test:browser          # a built deck driven in Chromium
+pnpm test:browser          # a built deck and the studio renderer driven in Chromium
 pnpm test:packed-consumer  # the packed tarball installed with npm outside the workspace
 ```
 
 Then run the CLI from source with `pnpm exec node packages/fuse-deck/src/bin.ts <command>`. The
 [package README](packages/fuse-deck/README.md) describes the commands, the deck format and how a
-deck builds.
+deck builds. The studio, a desktop app for previewing and editing a deck, lives in
+[apps/studio](apps/studio/README.md) and [apps/desktop](apps/desktop/README.md).
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 

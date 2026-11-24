@@ -10,37 +10,59 @@
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
-import * as SubscriptionRef from "effect/SubscriptionRef";
+import * as Electron from "electron";
 
+import { PickedDeck } from "@elmeragroup/fuse-deck-studio/contract/desktop-bridge";
+import { BackendConnection } from "@elmeragroup/fuse-deck-studio/contract/studio-launch";
+
+import { BackendAuth } from "../backend/backend-auth.ts";
 import { BackendManager } from "../backend/backend-manager.ts";
 import type { BackendCommand, BackendTiming } from "../backend/backend-manager.ts";
-import { BackendStatus } from "../backend/backend-status.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
-import { BACKEND_STATUS_CHANGED_CHANNEL, BACKEND_STATUS_CHANNEL } from "../ipc/channels.ts";
+import { BACKEND_CONNECTION_CHANNEL, INITIAL_DECK_CHANNEL, PICK_DECK_CHANNEL } from "../ipc/channels.ts";
 import * as DesktopIpc from "../ipc/DesktopIpc.ts";
 import { DesktopWindow } from "../window/desktop-window.ts";
+import type { RendererSource } from "./desktop-config.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 
 /** What the program starts. */
 export type DesktopAppInput = {
-  /** The stub page's files. */
-  readonly rendererDirectory: string;
+  readonly renderer: RendererSource;
   readonly backend: BackendCommand;
   readonly backendTiming: BackendTiming;
+  /** A deck the renderer opens at start. */
+  readonly initialDeck: Option.Option<string>;
 };
 
-const encodeStatus = Schema.encodeEffect(BackendStatus);
+/** Ask the user for a deck directory with the system dialog, over the main window when there is one. */
+const pickDeck = Effect.fn("desktop.pickDeck")(function* () {
+  const electronWindow = yield* ElectronWindow.ElectronWindow;
+  const parent = yield* electronWindow.main;
+  const options: Electron.OpenDialogOptions = {
+    title: "Open deck",
+    buttonLabel: "Open deck",
+    properties: ["openDirectory"],
+  };
+  const picked = yield* Effect.promise(() =>
+    Option.match(parent, {
+      onNone: () => Electron.dialog.showOpenDialog(options),
+      onSome: (window) => Electron.dialog.showOpenDialog(window, options),
+    })
+  );
+  return picked.canceled ? null : (picked.filePaths[0] ?? null);
+});
 
 /**
  * Run the shell until it quits.
  *
- * @param input - The page to serve and the backend to run.
+ * @param input - Where the renderer comes from and the backend to run.
  */
 export const program = Effect.fn("desktop.app")(function* (input: DesktopAppInput) {
   const shutdown = yield* DesktopShutdown.DesktopShutdown;
@@ -53,32 +75,46 @@ export const program = Effect.fn("desktop.app")(function* (input: DesktopAppInpu
   yield* electronApp.whenReady;
 
   const protocol = yield* ElectronProtocol.ElectronProtocol;
-  yield* protocol.registerDesktopProtocol({
-    scheme: ElectronProtocol.getDesktopScheme(false),
-    assetDirectory: input.rendererDirectory,
-  });
+  const isDevelopment = input.renderer._tag === "DevServer";
+  const scheme = ElectronProtocol.getDesktopScheme(isDevelopment);
+  yield* protocol.registerDesktopProtocol(
+    input.renderer._tag === "DevServer"
+      ? { scheme, targetOrigin: input.renderer.url }
+      : { scheme, assetDirectory: input.renderer.directory }
+  );
 
-  const backend = yield* Layer.build(BackendManager.layer(input.backend, input.backendTiming));
-  const { status } = Context.get(backend, BackendManager);
+  const backend = yield* Layer.build(
+    BackendAuth.layer.pipe(
+      Layer.provideMerge(BackendManager.layer(input.backend, input.backendTiming)),
+      Layer.provide(FetchHttpClient.layer)
+    )
+  );
+  const auth = Context.get(backend, BackendAuth);
 
   const ipc = yield* DesktopIpc.DesktopIpc;
   yield* ipc.handle(
     DesktopIpc.makeIpcMethod({
-      channel: BACKEND_STATUS_CHANNEL,
+      channel: BACKEND_CONNECTION_CHANNEL,
       payload: Schema.Undefined,
-      result: BackendStatus,
-      handler: () => SubscriptionRef.get(status),
+      result: BackendConnection,
+      handler: () => auth.connection,
     })
   );
-  const electronWindow = yield* ElectronWindow.ElectronWindow;
-  yield* SubscriptionRef.changes(status).pipe(
-    Stream.runForEach((current) =>
-      Effect.flatMap(encodeStatus(current), (encoded) =>
-        electronWindow.sendAll(BACKEND_STATUS_CHANGED_CHANNEL, encoded)
-      )
-    ),
-    Effect.ignore,
-    Effect.forkScoped
+  yield* ipc.handle(
+    DesktopIpc.makeIpcMethod({
+      channel: PICK_DECK_CHANNEL,
+      payload: Schema.Undefined,
+      result: PickedDeck,
+      handler: pickDeck,
+    })
+  );
+  yield* ipc.handle(
+    DesktopIpc.makeIpcMethod({
+      channel: INITIAL_DECK_CHANNEL,
+      payload: Schema.Undefined,
+      result: PickedDeck,
+      handler: () => Effect.succeed(Option.getOrNull(input.initialDeck)),
+    })
   );
 
   const desktopWindow = yield* DesktopWindow;

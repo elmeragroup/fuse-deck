@@ -1,10 +1,17 @@
 {
   "extends": ["//"],
   "tasks": {
-    // The packaged app stages the packed fuse-deck tarball as its backend.
+    // The packaged app stages the packed studio tarball as its backend.
     "package": {
-      "dependsOn": ["build", "@elmeragroup/fuse-deck#pack"],
+      "dependsOn": ["build", "@elmeragroup/fuse-deck-studio#pack"],
       "passThroughEnv": ["CSC_IDENTITY_AUTO_DISCOVERY"]
+    },
+    // Electron with the studio renderer's dev server; it needs the built backend and main.
+    "dev": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "persistent": true,
+      "passThroughEnv": ["FUSE_DECK_STUDIO_DECK"]
     },
     "test:packaged": {
       "dependsOn": ["package"]

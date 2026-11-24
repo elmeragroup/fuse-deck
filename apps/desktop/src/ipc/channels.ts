@@ -1,10 +1,13 @@
 /**
- * The IPC channels between the stub page's preload and main, after t3code's
+ * The IPC channels between the renderer's preload and main, after t3code's
  * `apps/desktop/src/ipc/channels.ts`. The preload imports this file, so it holds only constants.
  */
 
-/** Invoke: the backend's current status. */
-export const BACKEND_STATUS_CHANNEL = "fuse-deck-studio:backend-status";
+/** Invoke: the current backend's address and session bearer. */
+export const BACKEND_CONNECTION_CHANNEL = "fuse-deck-studio:backend-connection";
 
-/** Main to renderer: the backend's status changed. */
-export const BACKEND_STATUS_CHANGED_CHANNEL = "fuse-deck-studio:backend-status-changed";
+/** Invoke: ask the user for a deck directory. */
+export const PICK_DECK_CHANNEL = "fuse-deck-studio:pick-deck";
+
+/** Invoke: the deck to open at start. */
+export const INITIAL_DECK_CHANNEL = "fuse-deck-studio:initial-deck";

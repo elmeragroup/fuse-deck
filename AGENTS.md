@@ -36,9 +36,18 @@ the tests together.
 
 Assert behavior against independently defined expectations. Never compute an expected result with
 the code under test. A test that flakes is made deterministic or deleted in the same change. Put
-each test in the cheapest project that can fail: `unit` for the deck model (in deck-core) and the spawned CLI,
-`browser` for a built deck in Chromium, the packed smoke test for the installed tarball, and
+each test in the cheapest project that can fail: `unit` for the deck model (in deck-core), the spawned CLI
+and the studio backend (in-process services and the spawned backend), `browser` for a built deck or
+the built studio renderer in Chromium, the packed smoke test for the installed tarball, and
 `test:packaged` in `apps/desktop` for the packaged desktop app.
+
+## Studio
+
+`apps/studio` is the studio's backend and renderer, `apps/desktop` its Electron shell. The backend
+admits a renderer by exact Origin plus a bearer-for-ticket exchange; keep CORS to the renderer's
+origin, never `*`, and set no cookie. Every call about an open deck carries its scope id and is
+refused before it runs when the scope is closing or gone. The renderer and the shared contract in
+`apps/studio/src/contract` import no Node API.
 
 While editing, run `pnpm exec vitest related <files> --run --project unit` in the package. Before
 review, run `pnpm check`; CI adds the browser suite, the packed smoke test and, on macOS, the

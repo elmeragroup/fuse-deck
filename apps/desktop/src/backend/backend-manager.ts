@@ -4,11 +4,18 @@
  * `apps/desktop/src/backend/DesktopBackendManager.ts` at 2fe7febc, MIT licence, Copyright (c) 2026
  * T3 Tools Inc.; see THIRD_PARTY_NOTICES.md), without its WSL, telemetry, pool and recovery parts.
  *
- * The backend announces readiness with one JSON document on stdout, `{"_tag":"DevServerReady","url"}`,
- * as `fuse-deck dev --json` prints it, in place of t3code's HTTP readiness poll. A backend that exits,
- * or prints no readiness document in time, starts again after a delay that doubles from
- * `initialRestartDelay` up to `maxRestartDelay`, and drops back to the start once a run was ready.
- * Closing the layer's scope stops the backend with SIGTERM, then SIGKILL after `terminateGrace`.
+ * Each run gets a fresh launch document on stdin, which the manager keeps open for the life of the
+ * run: the backend exits when the pipe closes, so a crashed main leaves none behind. The backend
+ * announces that it listens with one JSON document on stdout, `{"_tag":"StudioReady","url"}`, in
+ * place of t3code's HTTP readiness poll. The run is ready once the manager has traded the run's
+ * bootstrap credential for the session bearer (after t3code's `DesktopLocalEnvironmentAuth`).
+ * The credential works once, and a request whose answer is lost may have spent it, so a failed
+ * exchange is never tried again: it ends the run, and the next run gets a fresh credential.
+ *
+ * A backend that exits, prints no readiness document in time or hands over no bearer starts again
+ * after a delay that doubles from `initialRestartDelay` up to `maxRestartDelay`, and drops back to
+ * the start once a run was ready. Closing the layer's scope stops the backend with SIGTERM, then
+ * SIGKILL after `terminateGrace`.
  */
 
 import * as Console from "effect/Console";
@@ -16,17 +23,28 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as PlatformError from "effect/PlatformError";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
-import type { BackendStatus } from "./backend-status.ts";
+import {
+  BACKEND_STOP_DEADLINE,
+  SESSION_PATH,
+  SessionResponse,
+  StudioReady,
+} from "@elmeragroup/fuse-deck-studio/contract/studio-launch";
+
+import type { BackendLaunch, BackendStatus } from "./backend-status.ts";
 
 /** The process to run. The composition root builds it, environment included. */
 export type BackendCommand = {
@@ -36,11 +54,21 @@ export type BackendCommand = {
   readonly cwd: string;
   /** The child's whole environment; nothing is inherited past it. */
   readonly env: Readonly<Record<string, string>>;
+  /** The launch document for one run, made fresh for each: the first line of the run's stdin. */
+  readonly launch: Effect.Effect<BackendLaunch>;
 };
+
+/** How long the bearer exchange with a run that just printed its readiness document may take. */
+const EXCHANGE_TIMEOUT = Duration.seconds(10);
+
+/** Main could not trade a run's bootstrap credential for its bearer. */
+export class BearerExchangeFailed extends Schema.TaggedError<BearerExchangeFailed>()("BearerExchangeFailed", {
+  message: Schema.String,
+}) {}
 
 /** How long each phase may take. Tests shorten them. */
 export type BackendTiming = {
-  /** How long a run may take to print its readiness document. */
+  /** How long a run may take to print its readiness document. The bearer exchange follows. */
   readonly readinessTimeout: Duration.Duration;
   /** How long SIGTERM has before SIGKILL. */
   readonly terminateGrace: Duration.Duration;
@@ -48,10 +76,14 @@ export type BackendTiming = {
   readonly maxRestartDelay: Duration.Duration;
 };
 
-/** t3code's restart delays and stop grace; the readiness wait covers a deck's first optimizer run. */
+/**
+ * t3code's restart delays; the readiness wait covers a deck's first optimizer run. SIGKILL waits
+ * five seconds past the backend's own stop deadline, so a stop that drains an open deck's calls
+ * finishes first.
+ */
 export const DEFAULT_BACKEND_TIMING: BackendTiming = {
   readinessTimeout: Duration.seconds(90),
-  terminateGrace: Duration.seconds(5),
+  terminateGrace: Duration.sum(BACKEND_STOP_DEADLINE, Duration.seconds(5)),
   initialRestartDelay: Duration.millis(500),
   maxRestartDelay: Duration.seconds(10),
 };
@@ -81,9 +113,36 @@ export class BackendManager extends Context.Service<
     );
 }
 
-/** `fuse-deck dev --json`'s readiness document, the one line of stdout this manager reads. */
-const DevServerReady = Schema.fromJsonString(Schema.TaggedStruct("DevServerReady", { url: Schema.String }));
-const decodeReady = Schema.decodeUnknownOption(DevServerReady);
+/** The backend's readiness document, the one line of stdout this manager reads. */
+const decodeReady = Schema.decodeUnknownOption(Schema.fromJsonString(StudioReady));
+
+/**
+ * Trade `bootstrap` for the session bearer of the backend at `url`, once, with no Origin.
+ *
+ * @returns The bearer, or why the run gave none.
+ */
+const exchangeBootstrap = Effect.fn("BackendManager.exchangeBootstrap")(function* (
+  url: string,
+  bootstrap: Redacted.Redacted<string>
+) {
+  const http = yield* HttpClient.HttpClient;
+  return yield* http
+    .execute(
+      HttpClientRequest.post(new URL(SESSION_PATH, url).href).pipe(
+        HttpClientRequest.bodyJsonUnsafe({ bootstrap: Redacted.value(bootstrap) })
+      )
+    )
+    .pipe(
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap(HttpClientResponse.schemaBodyJson(SessionResponse)),
+      Effect.map(({ bearer }) => Redacted.make(bearer)),
+      Effect.timeout(EXCHANGE_TIMEOUT),
+      Effect.mapError(
+        (error) =>
+          new BearerExchangeFailed({ message: `the backend at ${url} gave no bearer: ${error.message}` })
+      )
+    );
+});
 
 /** Run the backend, again and again, until interrupted. */
 const supervise = Effect.fn("BackendManager.supervise")(function* (
@@ -127,12 +186,14 @@ const runOnce = Effect.fn("BackendManager.runOnce")(function* (
   return yield* Effect.scoped(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const launch = yield* command.launch;
       const spawned = yield* Effect.result(
         spawner.spawn(
           ChildProcess.make(command.executable, [...command.args], {
             cwd: command.cwd,
             env: command.env,
-            stdin: "ignore",
+            // The launch document, then nothing: the pipe stays open until the run's scope closes.
+            stdin: { stream: Stream.make(new TextEncoder().encode(`${launch.stdin}\n`)), endOnDone: false },
             killSignal: "SIGTERM",
             forceKillAfter: timing.terminateGrace,
           })
@@ -180,7 +241,12 @@ const runOnce = Effect.fn("BackendManager.runOnce")(function* (
       if (outcome.value._tag === "Exited") {
         return { reason: `${exitReason(outcome.value.exit)} before it was ready`, wasReady: false };
       }
-      yield* SubscriptionRef.set(status, { _tag: "Ready", url: outcome.value.url });
+      const { url } = outcome.value;
+      const bearer = yield* Effect.result(exchangeBootstrap(url, launch.bootstrap));
+      if (Result.isFailure(bearer)) {
+        return { reason: bearer.failure.message, wasReady: false };
+      }
+      yield* SubscriptionRef.set(status, { _tag: "Ready", url, bearer: bearer.success });
       return { reason: exitReason(yield* Effect.result(handle.exitCode)), wasReady: true };
     })
   );

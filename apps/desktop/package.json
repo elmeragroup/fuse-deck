@@ -9,14 +9,16 @@
   "productName": "fuse-deck studio",
   "scripts": {
     "build": "rm -rf dist && tsdown",
+    "dev": "node scripts/dev.ts",
     "package": "node scripts/package.ts",
     "test": "vitest run --project unit",
     "test:packaged": "node scripts/packaged-smoke.ts",
-    "type-check": "tsrs --noEmit && tsrs --noEmit -p tsconfig.renderer.json"
+    "type-check": "tsrs --noEmit"
   },
   "devDependencies": {
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
+    "@elmeragroup/fuse-deck-studio": "workspace:*",
     "@elmeragroup/typescript-config": "workspace:*",
     "@types/node": "catalog:",
     "effect": "catalog:",

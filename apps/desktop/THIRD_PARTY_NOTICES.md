@@ -25,10 +25,19 @@ names what changed.
 Ported, written to this repository's rules after the named upstream file:
 
 - `src/backend/backend-manager.ts`, after `apps/desktop/src/backend/DesktopBackendManager.ts`
+- `src/backend/backend-auth.ts`, after `apps/desktop/src/backend/DesktopLocalEnvironmentAuth.ts`
 - `src/window/desktop-window.ts`, after `apps/desktop/src/window/DesktopWindow.ts`
 - `src/app/desktop-app.ts`, after `apps/desktop/src/app/DesktopApp.ts`
 - `src/main.ts`, after `apps/desktop/src/main.ts`
 - `src/preload.ts`, after `apps/desktop/src/preload.ts`
+
+In `apps/studio`, also ported after the named upstream file:
+
+- `src/server/studio-auth.ts`, after `apps/server/src/auth` (the bootstrap, session and
+  WebSocket-ticket flow)
+- `src/contract/desktop-bridge.ts`, after `apps/desktop/src/preload.ts`
+- `src/renderer/state/studio-client.ts`, after `packages/client-runtime/src/rpc/session.ts`
+- `src/renderer/router.ts`, after `apps/web/src/router.ts`
 
 ## T3 Code licence
 

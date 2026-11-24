@@ -1,14 +1,15 @@
 /**
  * Package the shell as an unsigned macOS arm64 app in `.artifacts/release`.
  *
- * It stages the backend first: a production install of the packed fuse-deck tarball with React,
- * React DOM and the Fuse release this workspace pins, made by npm in `.artifacts/backend`, with its
+ * It stages the backend first: a production install of the packed studio backend
+ * (`@elmeragroup/fuse-deck-studio`) with React, React DOM and the Fuse release this workspace
+ * pins, made by npm in `.artifacts/backend`, with its
  * `package-lock.json` at the root (the deck's optimizer cache is keyed by it). electron-builder
  * copies that tree under `Contents/Resources/backend`, outside `app.asar`, so the backend's Node
  * and Vite read it from the real file system. The script then checks that the packaged tree holds
  * every staged file.
  *
- * Usage: node scripts/package.ts (after `build` here and `pack` in packages/fuse-deck)
+ * Usage: node scripts/package.ts (after `build` here and `pack` in apps/studio)
  */
 
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
@@ -31,7 +32,7 @@ class PackageFailed extends Schema.TaggedError<PackageFailed>()("PackageFailed",
 
 const desktopRoot = path.resolve(import.meta.dirname, "..");
 const workspaceRoot = path.resolve(desktopRoot, "..", "..");
-const fuseDeckRoot = path.join(workspaceRoot, "packages", "fuse-deck");
+const studioRoot = path.join(workspaceRoot, "apps", "studio");
 const artifacts = path.join(desktopRoot, ".artifacts");
 const stage = path.join(artifacts, "backend");
 const tarballs = path.join(artifacts, "tarballs");
@@ -81,15 +82,15 @@ function text<E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E>
   return stream.pipe(Stream.decodeText(), Stream.mkString);
 }
 
-/** The one tarball `pack` left in fuse-deck's `.artifacts`. */
-const fuseDeckTarball = Effect.fn("fuseDeckTarball")(function* () {
+/** The one tarball `pack` left in the studio's `.artifacts`. */
+const studioTarball = Effect.fn("studioTarball")(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const directory = path.join(fuseDeckRoot, ".artifacts");
+  const directory = path.join(studioRoot, ".artifacts");
   const names = (yield* fs
     .readDirectory(directory)
     .pipe(
       Effect.mapError(
-        () => new PackageFailed({ message: `No ${directory}. Run fuse-deck's pack task first.` })
+        () => new PackageFailed({ message: `No ${directory}. Run the studio's pack task first.` })
       )
     )).filter((name) => name.endsWith(".tgz"));
   const [only] = names;
@@ -109,18 +110,18 @@ const stageBackend = Effect.fn("stageBackend")(function* () {
   yield* fs.makeDirectory(stage, { recursive: true });
   yield* fs.makeDirectory(tarballs, { recursive: true });
 
-  const deckTarball = path.join(tarballs, "fuse-deck.tgz");
-  yield* fs.copyFile(yield* fuseDeckTarball(), deckTarball);
+  const backendTarball = path.join(tarballs, "fuse-deck-studio.tgz");
+  yield* fs.copyFile(yield* studioTarball(), backendTarball);
   // The pinned Fuse canary, fetched as a tarball first: pnpm-workspace.yaml exempts in-house
   // canaries from the release age, and the install's `--before` would not.
-  const fuseVersion = yield* installedVersion(fuseDeckRoot, "@elmeragroup/fuse");
+  const fuseVersion = yield* installedVersion(studioRoot, "@elmeragroup/fuse");
   const packed = yield* run(
     "npm",
     ["pack", `@elmeragroup/fuse@${fuseVersion}`, "--pack-destination", tarballs, "--silent"],
     tarballs
   );
   const fuseTarball = path.join(tarballs, packed.trim());
-  const react = yield* installedVersion(fuseDeckRoot, "react");
+  const react = yield* installedVersion(studioRoot, "react");
 
   yield* fs.writeFileString(
     path.join(stage, "package.json"),
@@ -130,7 +131,7 @@ const stageBackend = Effect.fn("stageBackend")(function* () {
       type: "module",
       dependencies: {
         "@elmeragroup/fuse": `file:${path.relative(stage, fuseTarball)}`,
-        "@elmeragroup/fuse-deck": `file:${path.relative(stage, deckTarball)}`,
+        "@elmeragroup/fuse-deck-studio": `file:${path.relative(stage, backendTarball)}`,
         react,
         "react-dom": react,
       },

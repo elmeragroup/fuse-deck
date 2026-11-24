@@ -18,11 +18,14 @@
         // no span.
         "effectFn": ["span", "untraced"],
         // The unstable modules fuse-deck builds on: the CLI, HTTP, child-process, file-system and
-        // terminal services, the platform layers that provide them, the test kit, and Stream's byte limit.
+        // terminal services, the platform layers that provide them, the test kit, Stream's byte limit,
+        // and the studio's RPC over WebSocket.
         "allowedUnstableApis": [
           "effect/cli",
           "effect/http",
           "effect/process",
+          "effect/rpc",
+          "effect/socket",
           "effect/testing",
           "effect/crypto",
           "effect/FileSystem",
