@@ -36,6 +36,8 @@ catalog:
   # The deck pipeline. Vite is exact because fuse-deck calls its experimental `runnerImport`, and
   # the packed smoke test is the tripwire for a change there.
   vite: 8.3.0
+  # deck-core parses and inlines deck CSS with the PostCSS release Vite 8.3 resolves.
+  postcss: 8.5.33
   # JSX and Fast Refresh for slides; 6.3.0 supports Vite 8.
   "@vitejs/plugin-react": 6.3.0
   "@mdx-js/mdx": 3.1.1

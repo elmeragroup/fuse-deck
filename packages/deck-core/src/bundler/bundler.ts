@@ -1,8 +1,23 @@
 /**
  * Vite behind the deck: the dev server, the static build, the slide compile and the theme check.
- * The bundler owns the whole Vite config: the deck directory is the root, no `vite.config` file
- * loads, the runtime comes from the host's `runtimeRoot`, and Vite's logs go to stderr so stdout
- * keeps the host's results.
+ * The bundler owns the whole Vite config: the deck directory is the root, the runtime comes from
+ * the host's `runtimeRoot`, and Vite's logs go to stderr so stdout keeps the host's results.
+ *
+ * A deck is content, and opening one must not run its code in Node. Vite 8.3 would do that through
+ * every file it discovers in the root and loads as code, so each one is closed in the config:
+ * - `configFile: false`: no `vite.config.*`.
+ * - `css.postcss` inline: no `postcss.config.*`, `.postcssrc*` or `package.json#postcss`, which
+ *   Vite searches the root for when the server or the build starts, plugins named in them included.
+ * - `plainCssPlugin`: no Sass, Less, Stylus or SugarSS compiler loads from the deck, for a module
+ *   or through a CSS `@import`, and deck-core inlines the deck's own `@import`s, each a `.css`
+ *   file inside the deck. Workers get it too, through `worker.plugins`.
+ * - `envDir: false`: no `.env*` file reaches `import.meta.env`.
+ * A deck is also self-contained: `containedResolutionPlugin` refuses an import that leads outside
+ * the deck, in dev, in the build and in its workers, and `containedServingPlugin` refuses a dev
+ * request that a symlink in the deck would take outside it.
+ * The rest of what Vite reads from the root is data it never runs: `tsconfig.json` for the
+ * transform, `package.json` fields for resolution, and the deck's own modules, which run only in
+ * the page.
  */
 
 import react from "@vitejs/plugin-react";
@@ -28,6 +43,8 @@ import type { DeckManifest, DeckManifestInvalid } from "../deck/deck-manifest.ts
 import type { SlideFrontmatterInvalid } from "../deck/slide-source.ts";
 import { BUILD_MARKER, resolveBuildOutput } from "./build-output.ts";
 import type { BuildOutputRefused } from "./build-output.ts";
+import { containedResolutionPlugin } from "./contained-resolution.ts";
+import { containedServingPlugin } from "./contained-serving.ts";
 import { deckPlugins } from "./deck-plugin.ts";
 import type { DeckManifestModule, Embedder } from "./deck-plugin.ts";
 import { firstPaint, loadFuseTheme } from "./fuse-theme.ts";
@@ -36,6 +53,7 @@ import { compileSlide } from "./mdx.ts";
 import type { CompiledSlide, SlideCompileFailed, SlideMetadata } from "./mdx.ts";
 import { optimizerCache } from "./optimizer-cache.ts";
 import type { OptimizerCache } from "./optimizer-cache.ts";
+import { plainCssPlugin } from "./plain-css.ts";
 import { dependencyPackage, RESOLVE_ANCHOR, RESOLVE_ROOT } from "./resolve-root.ts";
 import type { DependencyPackage } from "./resolve-root.ts";
 
@@ -158,12 +176,26 @@ export class Bundler extends Context.Service<
         });
 
         const dependencies = dependencyPackages();
+        // The dev server's client, `/@vite/client`, is a file of Vite's own package.
+        const viteRoot = Option.toArray(Option.map(dependencyPackage("vite"), ({ root }) => root));
         // The optimizer reads React, React DOM and Fuse, and the runtime imports them.
         const cacheDir = optimizerCache(deck.root, {
           packages: dependencies,
           runtimeEntry: path.join(runtimeRoot, "main.js"),
           install: RESOLVE_ROOT,
         }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+
+        // The build bundles each worker with `worker.plugins` alone, so they hold their own copies.
+        const containmentPlugins = () => [
+          containedResolutionPlugin({
+            deckRoot: deck.root,
+            trustedRoots: [runtimeRoot, ...dependencies.map(({ root }) => root), ...viteRoot],
+          }),
+          plainCssPlugin({
+            deckRoot: deck.root,
+            trustedRoots: [runtimeRoot, ...dependencies.map(({ root }) => root)],
+          }),
+        ];
 
         const config = (
           mode: Mode,
@@ -173,6 +205,8 @@ export class Bundler extends Context.Service<
           root: deck.root,
           configFile: false,
           envDir: false,
+          // Inline, so Vite searches the deck for no PostCSS config. The deck's CSS needs no plugin.
+          css: { postcss: {} },
           mode,
           base: "./",
           cacheDir: cache.directory,
@@ -181,7 +215,10 @@ export class Bundler extends Context.Service<
           optimizeDeps: { force: Option.isNone(cache.lockfile) },
           customLogger: stderrLogger(mode),
           appType: "spa",
+          worker: { plugins: containmentPlugins },
           plugins: [
+            containedServingPlugin(deck.root),
+            ...containmentPlugins(),
             deckPlugins({
               root: deck.root,
               runtimeRoot,

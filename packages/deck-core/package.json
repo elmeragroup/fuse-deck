@@ -29,6 +29,7 @@
     "@mdx-js/mdx": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "effect": "catalog:",
+    "postcss": "catalog:",
     "remark-frontmatter": "catalog:",
     "vite": "catalog:",
     "yaml": "catalog:"

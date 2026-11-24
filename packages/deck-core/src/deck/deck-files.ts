@@ -13,11 +13,13 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+import { isInside } from "./contained-file.ts";
 import * as DeckManifest from "./deck-manifest.ts";
 import type { OrderPosition } from "./deck-manifest.ts";
 import { holdLock } from "./file-lock.ts";
@@ -171,8 +173,59 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
   const slidesDir = path.join(root, SLIDES_DIR);
   const slideFile = (id: SlideId) => path.join(root, slidePath(id));
 
+  /**
+   * The real path of `file` once it is an entry of `type` inside the deck. A deck is untrusted,
+   * and a symlinked slide, manifest or slides directory must not reach a file outside it. Callers
+   * read and write through the path this returns, the one that was checked.
+   */
+  const containedPath = Effect.fnUntraced(function* (file: string, type: "File" | "Directory") {
+    const realRoot = yield* fs.realPath(root);
+    const real = yield* fs.realPath(file);
+    const info = yield* fs.stat(real);
+    if (!isInside(realRoot, real) || info.type !== type) {
+      return yield* new DeckIoFailed({
+        message: `${file} resolves to ${real}, which is not a ${type === "File" ? "file" : "directory"} inside the deck.`,
+        path: file,
+      });
+    }
+    return real;
+  });
+
+  /** The text of `file`, read through its contained real path. */
+  const readContained = (file: string) =>
+    containedPath(file, "File").pipe(
+      Effect.flatMap((real) => fs.readFileString(real)),
+      Effect.mapError((error) => (error._tag === "PlatformError" ? ioFailed(file)(error) : error))
+    );
+
+  /** The slides directory's real path, once it is a directory inside the deck. */
+  const containedSlidesDir = containedPath(slidesDir, "Directory").pipe(
+    Effect.mapError((error) => (error._tag === "PlatformError" ? ioFailed(slidesDir)(error) : error))
+  );
+
+  /**
+   * The entry `removeSlide` deletes: the slide's name in the slides directory's real path, once
+   * the slides directory is inside the deck and the name, if it resolves at all, resolves to a
+   * regular file inside it. None when there is no slides directory. The name itself is deleted,
+   * never what it resolves to, so a link to another slide leaves that slide.
+   */
+  const removableSlide = Effect.fnUntraced(function* (id: SlideId) {
+    if (!(yield* fs.exists(slidesDir).pipe(Effect.mapError(ioFailed(slidesDir))))) {
+      return Option.none<string>();
+    }
+    const entry = path.join(yield* containedSlidesDir, path.basename(slideFile(id)));
+    yield* containedPath(entry, "File").pipe(
+      Effect.catchIf(
+        (error) => error._tag === "PlatformError" && error.reason._tag === "NotFound",
+        () => Effect.void
+      ),
+      Effect.mapError((error) => (error._tag === "PlatformError" ? ioFailed(entry)(error) : error))
+    );
+    return Option.some(entry);
+  });
+
   const readManifest = Effect.gen(function* () {
-    const text = yield* fs.readFileString(manifestFile).pipe(Effect.mapError(ioFailed(manifestFile)));
+    const text = yield* readContained(manifestFile);
     return yield* Effect.fromResult(DeckManifest.parseManifest(text));
   });
 
@@ -226,14 +279,15 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
       } satisfies LoadedDeck;
     }).pipe(Effect.withSpan("DeckFiles.load")),
 
-    readSlide: (id) => fs.readFileString(slideFile(id)).pipe(Effect.mapError(ioFailed(slideFile(id)))),
+    readSlide: (id) => readContained(slideFile(id)),
 
     addSlide: Effect.fn("DeckFiles.addSlide")(function* (id, position, text) {
       return yield* locked(
         Effect.gen(function* () {
           const next = yield* Effect.fromResult(DeckManifest.addSlide(yield* readManifest, id, position));
-          const file = slideFile(id);
           yield* fs.makeDirectory(slidesDir, { recursive: true }).pipe(Effect.mapError(ioFailed(slidesDir)));
+          // Create the file through the slides directory's real path, once it is inside the deck.
+          const file = path.join(yield* containedSlidesDir, path.basename(slideFile(id)));
           yield* fs.writeFileString(file, text, { flag: "wx" }).pipe(
             Effect.catchIf(
               (error) => error.reason._tag === "AlreadyExists",
@@ -268,9 +322,12 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
       return yield* locked(
         Effect.gen(function* () {
           const next = yield* Effect.fromResult(DeckManifest.removeSlide(yield* readManifest, id));
+          const file = yield* removableSlide(id);
           yield* writeManifest(next);
-          const file = slideFile(id);
-          yield* fs.remove(file, { force: true }).pipe(Effect.mapError(ioFailed(file)));
+          yield* Option.match(file, {
+            onNone: () => Effect.void,
+            onSome: (entry) => fs.remove(entry, { force: true }).pipe(Effect.mapError(ioFailed(entry))),
+          });
           return next;
         })
       );

@@ -9,7 +9,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as fc from "fast-check";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -313,6 +313,107 @@ describe("scaffoldDeck", () => {
         assert.deepStrictEqual(yield* Effect.promise(() => readdir(root)), []);
         yield* scaffoldDeck(input);
         assert.include(yield* Effect.promise(() => readdir(root)), "deck.json");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+});
+
+describe("DeckFiles reads", () => {
+  it.effect("refuse a slide that a symlinked file or directory takes outside the deck", () =>
+    Effect.gen(function* () {
+      const deck = yield* deckWith(["a"]);
+      const outside = path.join(path.dirname(deck.root), "outside");
+      const secret = "outside-the-deck-7f3a";
+      yield* Effect.promise(async () => {
+        await mkdir(outside);
+        await writeFile(path.join(outside, "a.mdx"), `# ${secret}\n`);
+        await writeFile(path.join(outside, "cover.mdx"), `# ${secret}\n`);
+        // A symlinked slide file.
+        await rm(path.join(deck.root, "slides", "a.mdx"));
+        await symlink(path.join(outside, "a.mdx"), path.join(deck.root, "slides", "a.mdx"));
+      });
+      const linkedFile = yield* Effect.result(deck.readSlide(id("a")));
+      // A symlinked slides directory.
+      yield* Effect.promise(async () => {
+        await rm(path.join(deck.root, "slides"), { recursive: true });
+        await symlink(outside, path.join(deck.root, "slides"));
+      });
+      const linkedDirectory = yield* Effect.result(deck.readSlide(id("cover")));
+      const outcome = (result: typeof linkedFile) =>
+        Result.isFailure(result) ? result.failure._tag : `read ${result.success}`;
+      assert.deepStrictEqual(
+        [outcome(linkedFile), outcome(linkedDirectory)],
+        ["DeckIoFailed", "DeckIoFailed"]
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+});
+
+describe("DeckFiles writes", () => {
+  type WriteCase = {
+    readonly name: string;
+    /** Where the symlink goes: the slides directory, or slide `a`'s file. */
+    readonly link: "directory" | "file";
+    readonly edit: (deck: DeckFiles["Service"]) => Effect.Effect<unknown, { readonly _tag: string }>;
+    readonly refusal: string;
+  };
+  const writeCases: readonly WriteCase[] = [
+    {
+      name: "add a slide through a symlinked slides directory",
+      link: "directory",
+      edit: (deck) => deck.addSlide(id("b"), { _tag: "End" }, "# b\n"),
+      refusal: "DeckIoFailed",
+    },
+    {
+      name: "remove a slide through a symlinked slides directory",
+      link: "directory",
+      edit: (deck) => deck.removeSlide(id("a")),
+      refusal: "DeckIoFailed",
+    },
+    {
+      name: "remove a slide whose file is a symlink",
+      link: "file",
+      edit: (deck) => deck.removeSlide(id("a")),
+      refusal: "DeckIoFailed",
+    },
+    {
+      // The exclusive create already refuses any existing entry, a symlink included.
+      name: "add a slide whose file is a symlink",
+      link: "file",
+      edit: (deck) => deck.addSlide(id("b"), { _tag: "End" }, "# b\n"),
+      refusal: "SlideFileExists",
+    },
+  ];
+
+  it.effect.each(writeCases)(
+    "refuse to $name that leaves the deck, and change nothing",
+    ({ link, edit, refusal }) =>
+      Effect.gen(function* () {
+        // Oracle: the outside directory as the test wrote it, and the order before the edit.
+        const deck = yield* deckWith(["a"]);
+        const outside = path.join(path.dirname(deck.root), "outside");
+        const secret = "# outside-the-deck-7f3a\n";
+        yield* Effect.promise(async () => {
+          await mkdir(outside);
+          await writeFile(path.join(outside, "a.mdx"), secret);
+          if (link === "directory") {
+            await rm(path.join(deck.root, "slides"), { recursive: true });
+            await symlink(outside, path.join(deck.root, "slides"));
+          } else {
+            await rm(path.join(deck.root, "slides", "a.mdx"));
+            await symlink(path.join(outside, "a.mdx"), path.join(deck.root, "slides", "a.mdx"));
+            await symlink(path.join(outside, "a.mdx"), path.join(deck.root, "slides", "b.mdx"));
+          }
+        });
+        const result = yield* Effect.result(edit(deck));
+        assert.deepStrictEqual(
+          {
+            outcome: Result.isFailure(result) ? result.failure._tag : "succeeded",
+            outside: yield* Effect.promise(() => readdir(outside)),
+            secret: yield* Effect.promise(() => readFile(path.join(outside, "a.mdx"), "utf8")),
+            order: yield* orderOnDisk(deck.root),
+          },
+          { outcome: refusal, outside: ["a.mdx"], secret, order: ["cover", "a"] }
+        );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 });
