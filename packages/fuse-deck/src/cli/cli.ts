@@ -34,7 +34,7 @@ import * as Vocabulary from "@elmeragroup/deck-core/deck/vocabulary";
 import type { LayoutName } from "@elmeragroup/deck-core/deck/vocabulary";
 
 import packageJson from "../../package.json" with { type: "json" };
-import { runtimeRoot, shippedSkillPath } from "../package-root.ts";
+import { runtimeRoot, shippedSkillPath, userCacheRoot } from "../package-root.ts";
 import { jsonPresenter, Output, outputModeFromArgv, printDocument, reply, reportFailure } from "./output.ts";
 import type { ReportableError } from "./output.ts";
 
@@ -53,7 +53,9 @@ const Json = GlobalFlag.Setting("json")({
 const deckLayer = Layer.suspend(() => DeckFiles.layerFrom(process.cwd()));
 
 /** The deck and the bundler over it, serving the runtime this package ships. */
-const bundlerLayer = Layer.suspend(() => Bundler.layer(runtimeRoot())).pipe(Layer.provideMerge(deckLayer));
+const bundlerLayer = Layer.suspend(() =>
+  Bundler.layer({ runtimeRoot: runtimeRoot(), cacheRoot: userCacheRoot() })
+).pipe(Layer.provideMerge(deckLayer));
 
 const create = Command.make(
   "create",

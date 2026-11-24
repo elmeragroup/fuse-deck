@@ -6,13 +6,15 @@
  *
  * - Refuses to load any module whose id Vite would read as a preprocessed stylesheet, under any
  *   query. Vite picks the language from the whole id, query included (`x.txt?lang.scss` is Sass),
- *   so the test does too.
+ *   so the test does too. CSS Modules are refused the same way: Vite's `composes` loader resolves
+ *   and reads its targets itself.
  * - Parses each deck stylesheet with PostCSS and inlines every `@import` itself. A target is
  *   either an `http:` or `https:` URL, kept for the browser, or a relative `.css` path whose real
  *   path is a regular `.css` file inside the deck; anything else fails the build. Vite receives
  *   CSS whose only `@import`s are remote, and its inliner leaves those to the browser.
- * - Checks every relative `url()` and `image-set()` target the same way when it exists, and
- *   rewrites the ones in an inlined stylesheet so they still name the same file from the importer.
+ * - Checks every relative `url()` and `image-set()` target the same way when it exists, as written
+ *   and as decoded, since Vite decodes a URL before it reads the file, and rewrites the ones in an
+ *   inlined stylesheet so they still name the same file from the importer.
  *
  * Stylesheets under the trusted roots (the runtime's and the dependencies fuse-deck installs) ship
  * built and pass through untouched.
@@ -24,13 +26,19 @@ import postcss from "postcss";
 import type { AtRule, ChildNode, Root } from "postcss";
 import type { Plugin } from "vite";
 
-import { containedFile, describeRefusal, isInside } from "../deck/contained-file.ts";
+import { deckEntrySync, describeRefusal, isInside } from "../deck/contained-file.ts";
 
 /** Vite 8.3's own test of a stylesheet's language, `CSS_LANGS_RE`, applied to the whole id. */
 const CSS_LANG = /\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/;
 
 /** The languages Vite compiles with a preprocessor resolved from the deck. */
 const PREPROCESSORS: ReadonlySet<string> = new Set(["less", "sass", "scss", "styl", "stylus", "sss"]);
+
+/** Vite 8.3's own test of a CSS Module, `cssModuleRE`, applied to the whole id. */
+const CSS_MODULE = /\.module\.(css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:$|\?)/;
+
+const MODULES_MESSAGE =
+  "fuse-deck decks style slides with plain CSS. CSS Modules do not load, because Vite resolves and reads their `composes` targets past the deck's checks.";
 
 /** Queries under which Vite serves a stylesheet as something other than CSS. */
 const NOT_CSS_QUERY = /[?&](?:worker|sharedworker|raw|url)\b/;
@@ -175,8 +183,8 @@ function importedFile(root: string, importer: string, target: string): Checked |
   if (target.startsWith("/") || /[?#\\]/.test(target) || SCHEMED.test(target) || !target.endsWith(".css")) {
     return refused(importer, `It imports ${target}.`);
   }
-  const contained = containedFile(root, path.resolve(path.dirname(importer), target));
-  if (contained._tag !== "ContainedFile") {
+  const contained = deckEntrySync(root, path.resolve(path.dirname(importer), target), ["File"]);
+  if (contained._tag !== "DeckEntry") {
     return refused(importer, `It imports ${target}: ${describeRefusal(contained)}`);
   }
   return contained.real.endsWith(".css")
@@ -266,22 +274,39 @@ function checkedUrl(root: string, file: string, entryDirectory: string, url: str
   const suffixStart = url.search(/[?#]/);
   const pathPart = suffixStart === -1 ? url : url.slice(0, suffixStart);
   const suffix = suffixStart === -1 ? "" : url.slice(suffixStart);
+  // Vite reads the file a URL names after `decodeURI`, so the check reads both spellings, and the
+  // fuller `decodeURIComponent` one too. A URL that does not decode is refused, as Vite would fail.
+  const spellings = decodedSpellings(pathPart);
+  if (spellings === undefined) {
+    return refused(file, `It names ${url}, which does not decode.`);
+  }
   // A root-relative URL names a file in the deck or in its `public` directory.
-  const candidates = pathPart.startsWith("/")
-    ? [path.join(root, pathPart), path.join(root, "public", pathPart)]
-    : [path.resolve(path.dirname(file), pathPart)];
-  for (const candidate of candidates) {
-    const contained = containedFile(root, candidate);
-    if (contained._tag === "OutsideDeck" || contained._tag === "NotAFile") {
+  const candidatesOf = (spelling: string) =>
+    spelling.startsWith("/")
+      ? [path.join(root, spelling), path.join(root, "public", spelling)]
+      : [path.resolve(path.dirname(file), spelling)];
+  for (const candidate of spellings.flatMap(candidatesOf)) {
+    const contained = deckEntrySync(root, candidate, ["File"]);
+    if (contained._tag === "OutsideDeck" || contained._tag === "Link" || contained._tag === "WrongKind") {
       return refused(file, `It names ${url}: ${describeRefusal(contained)}`);
     }
   }
+  const candidates = candidatesOf(pathPart);
   const [target] = candidates;
   if (pathPart.startsWith("/") || target === undefined || path.dirname(file) === entryDirectory) {
     return checked(url);
   }
   const relative = path.relative(entryDirectory, target).split(path.sep).join("/");
   return checked(`${relative.startsWith(".") ? relative : `./${relative}`}${suffix}`);
+}
+
+/** A URL path as written and as each decoder reads it, or none when one of them fails. */
+function decodedSpellings(pathPart: string): ReadonlyArray<string> | undefined {
+  try {
+    return [...new Set([pathPart, decodeURI(pathPart), decodeURIComponent(pathPart)])];
+  } catch {
+    return undefined;
+  }
 }
 
 /** Check, and where needed rewrite, every URL in `root`'s declarations. */
@@ -433,6 +458,9 @@ export function plainCssPlugin(options: {
       if (lang !== undefined && PREPROCESSORS.has(lang)) {
         this.error(`${REFUSED_MESSAGE} (${id})`);
       }
+      if (CSS_MODULE.test(id) && !trusted(fileOf(id))) {
+        this.error(`${MODULES_MESSAGE} (${id})`);
+      }
       return null;
     },
     transform(code, id) {
@@ -447,8 +475,11 @@ export function plainCssPlugin(options: {
       if (trusted(file)) {
         return null;
       }
-      const contained = containedFile(options.deckRoot, file);
-      if (contained._tag !== "ContainedFile") {
+      if (CSS_MODULE.test(id)) {
+        this.error(`${MODULES_MESSAGE} (${id})`);
+      }
+      const contained = deckEntrySync(options.deckRoot, file, ["File"]);
+      if (contained._tag !== "DeckEntry") {
         this.error(`A deck stylesheet must be a file inside the deck. ${describeRefusal(contained)}`);
       }
       const result = inline(options.deckRoot, contained.real, code, path.dirname(contained.real), []);

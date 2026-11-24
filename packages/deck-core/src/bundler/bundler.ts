@@ -12,9 +12,14 @@
  *   or through a CSS `@import`, and deck-core inlines the deck's own `@import`s, each a `.css`
  *   file inside the deck. Workers get it too, through `worker.plugins`.
  * - `envDir: false`: no `.env*` file reaches `import.meta.env`.
- * A deck is also self-contained: `containedResolutionPlugin` refuses an import that leads outside
- * the deck, in dev, in the build and in its workers, and `containedServingPlugin` refuses a dev
- * request that a symlink in the deck would take outside it.
+ * A deck is also self-contained, and holds no symbolic links (see `contained-file.ts`):
+ * `containedResolutionPlugin` refuses an import that leads outside the deck, in dev, in the build
+ * and in its workers; `containedServingPlugin` refuses a dev request through a link;
+ * `build.assetsInlineLimit: 0` makes Vite emit every asset as a file, which the build checks by the
+ * file it came from, instead of reading it into a data URL past every check; and the build copies
+ * `public/` itself, through the same check, in place of Vite's copier, which follows links.
+ * What Vite writes for itself, the optimizer cache, lives in the host's cache directory, never in
+ * the deck.
  * The rest of what Vite reads from the root is data it never runs: `tsconfig.json` for the
  * transform, `package.json` fields for resolution, and the deck's own modules, which run only in
  * the page.
@@ -37,6 +42,7 @@ import path from "node:path";
 import { build as viteBuild, createLogger, createServer } from "vite";
 import type { InlineConfig, Logger, ServerOptions, ViteDevServer } from "vite";
 
+import { deckEntry, describeRefusal } from "../deck/contained-file.ts";
 import { DeckFiles } from "../deck/deck-files.ts";
 import type { DeckIoFailed } from "../deck/deck-files.ts";
 import type { DeckManifest, DeckManifestInvalid } from "../deck/deck-manifest.ts";
@@ -101,6 +107,12 @@ export type DevOptions =
       readonly listener: HttpServer;
     };
 
+/** Where the bundler finds the runtime and keeps what Vite generates. */
+export type BundlerOptions = {
+  readonly runtimeRoot: string;
+  readonly cacheRoot: string;
+};
+
 /** What `dev` and `build` can fail with before Vite runs. */
 export type DeckSiteError =
   | DeckManifestInvalid
@@ -139,11 +151,12 @@ export class Bundler extends Context.Service<
   /**
    * The bundler for the deck `DeckFiles` found.
    *
-   * @param runtimeRoot - The directory holding the built runtime, `main.js` and `deck.css`, which
-   *   the host ships. The page loads both from it, and Vite may serve files inside it.
+   * @param options - `runtimeRoot`, the directory holding the built runtime, `main.js` and
+   *   `deck.css`, which the host ships (the page loads both from it, and Vite may serve files inside
+   *   it); and `cacheRoot`, a directory the host owns for what Vite generates, outside the deck.
    * @returns The layer.
    */
-  static readonly layer = (runtimeRoot: string) =>
+  static readonly layer = ({ runtimeRoot, cacheRoot }: BundlerOptions) =>
     Layer.effect(
       Bundler,
       Effect.gen(function* () {
@@ -180,17 +193,23 @@ export class Bundler extends Context.Service<
         // The dev server's client, `/@vite/client`, is a file of Vite's own package.
         const viteRoot = Option.toArray(Option.map(dependencyPackage("vite"), ({ root }) => root));
         // The optimizer reads React, React DOM and Fuse, and the runtime imports them.
-        const cacheDir = optimizerCache(deck.root, {
+        const cacheDir = optimizerCache(cacheRoot, deck.root, {
           packages: dependencies,
           runtimeEntry: path.join(runtimeRoot, "main.js"),
           install: RESOLVE_ROOT,
         }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
 
         // The build bundles each worker with `worker.plugins` alone, so they hold their own copies.
-        const containmentPlugins = () => [
+        // The optimizer cache is trusted: Vite writes it, and the page imports React from it.
+        const containmentPlugins = (cache: OptimizerCache) => () => [
           containedResolutionPlugin({
             deckRoot: deck.root,
-            trustedRoots: [runtimeRoot, ...dependencies.map(({ root }) => root), ...viteRoot],
+            trustedRoots: [
+              runtimeRoot,
+              ...dependencies.map(({ root }) => root),
+              ...viteRoot,
+              cache.directory,
+            ],
           }),
           plainCssPlugin({
             deckRoot: deck.root,
@@ -216,10 +235,12 @@ export class Bundler extends Context.Service<
           optimizeDeps: { force: Option.isNone(cache.lockfile) },
           customLogger: stderrLogger(mode),
           appType: "spa",
-          worker: { plugins: containmentPlugins },
+          worker: { plugins: containmentPlugins(cache) },
+          // Every asset ships as a file: an inlined one would be read past the checks.
+          build: { assetsInlineLimit: 0 },
           plugins: [
             containedServingPlugin(deck.root),
-            ...containmentPlugins(),
+            ...containmentPlugins(cache)(),
             deckPlugins({
               root: deck.root,
               runtimeRoot,
@@ -242,7 +263,9 @@ export class Bundler extends Context.Service<
             // Loopback only, on IPv4 by its literal address: the deck is a local preview, and the
             // studio frames it under a `frame-src http://127.0.0.1:*` policy.
             host: "127.0.0.1",
-            fs: { allow: [deck.root, runtimeRoot, ...dependencies.map(({ root }) => root)] },
+            fs: {
+              allow: [deck.root, runtimeRoot, ...dependencies.map(({ root }) => root), cache.directory],
+            },
             // No chokidar: `dev` polls the deck itself and reports each file on `server.watcher`,
             // which drives live reload as chokidar's events would. See `deck-poll.ts`.
             watch: null,
@@ -311,18 +334,26 @@ export class Bundler extends Context.Service<
             const output = yield* resolveBuildOutput(deck.root, out).pipe(
               Effect.provideService(FileSystem.FileSystem, fs)
             );
+            const production = config("production", cache, Option.none());
             yield* Effect.tryPromise({
               try: () =>
                 viteBuild({
-                  ...config("production", cache, Option.none()),
+                  ...production,
                   // Rolldown's build reporter writes its progress straight to stdout, past the
                   // custom logger, and stdout carries the CLI's result. Below info it stays quiet;
                   // warnings and errors still reach stderr.
                   logLevel: "warn",
-                  build: { outDir: output.directory, emptyOutDir: true },
+                  // `copyPublicDir: false`: `copyPublic` below copies `public/` through the checks.
+                  build: {
+                    ...production.build,
+                    outDir: output.directory,
+                    emptyOutDir: true,
+                    copyPublicDir: false,
+                  },
                 }),
               catch: bundlerFailed("build the deck"),
             });
+            yield* copyPublic(fs, deck.root, output.directory);
             const marker = path.join(output.directory, BUILD_MARKER);
             yield* fs
               .writeFileString(
@@ -340,6 +371,47 @@ export class Bundler extends Context.Service<
       })
     );
 }
+
+/**
+ * Copy the deck's `public/` into the build's output, as Vite's copier would, through the deck-path
+ * check: a link or special file in it fails the build, and nothing is read through one. A file the
+ * build already wrote keeps the build's version, as with Vite.
+ */
+const copyPublic = Effect.fnUntraced(function* (fs: FileSystem.FileSystem, root: string, out: string) {
+  const failed = (message: string) => new BundlerFailed({ message });
+  const copy = (relative: string): Effect.Effect<void, BundlerFailed> =>
+    Effect.gen(function* () {
+      const source = path.join(root, "public", relative);
+      const entry = yield* deckEntry(fs, root, source, ["File", "Directory"]).pipe(
+        Effect.mapError((error) => failed(`Could not read ${source}: ${error.message}`))
+      );
+      if (entry._tag === "Missing") {
+        return;
+      }
+      if (entry._tag !== "DeckEntry") {
+        return yield* failed(`The build copies public/ as it is: ${describeRefusal(entry)}`);
+      }
+      const target = path.join(out, relative);
+      if (entry.kind === "File") {
+        if (!(yield* fs.exists(target).pipe(Effect.orElseSucceed(() => false)))) {
+          yield* fs
+            .copyFile(entry.real, target)
+            .pipe(Effect.mapError((error) => failed(`Could not copy ${source}: ${error.message}`)));
+        }
+        return;
+      }
+      yield* fs
+        .makeDirectory(target, { recursive: true })
+        .pipe(Effect.mapError((error) => failed(`Could not make ${target}: ${error.message}`)));
+      const names = yield* fs
+        .readDirectory(entry.real)
+        .pipe(Effect.mapError((error) => failed(`Could not read ${source}: ${error.message}`)));
+      for (const name of [...names].sort()) {
+        yield* copy(path.join(relative, name));
+      }
+    });
+  yield* copy("");
+});
 
 /** The watcher events `DevServer.changes` reports. */
 const WATCH_EVENTS = ["add", "change", "unlink"] as const;
@@ -483,7 +555,7 @@ function bundlerFailed(operation: string) {
 /**
  * React, React DOM and Fuse, wherever the install put them. With the deck and the runtime
  * directory, their directories are all Vite may serve; the dependencies they import reach the page
- * through the optimizer's cache in the deck.
+ * through the optimizer's cache.
  */
 function dependencyPackages(): DependencyPackage[] {
   return ["react", "react-dom", "@elmeragroup/fuse"].flatMap((name) =>

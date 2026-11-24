@@ -23,6 +23,12 @@ A slide change is a React view transition: the old slide blurs out and the new o
 `<Step>` reveals content one key press at a time, and `<Morph name>` moves one element to its partner on the next slide. Arrow keys, Space, Page Up/Down, Home and End
 navigate; the URL hash names the slide and step, so links and Back work.
 
+A deck is untrusted input and self-contained. Nothing in it runs in Node, it reads nothing outside
+its directory, and it holds no symbolic links: a command on a deck that holds one fails with
+`DeckEntryRefused`, naming the link. Slides style with Fuse and plain `.css` files; Sass, Less,
+Stylus and CSS Modules do not load. Vite's cache goes to the user cache directory
+(`$XDG_CACHE_HOME/fuse-deck`, `~/Library/Caches/fuse-deck` on macOS), never into the deck.
+
 From this checkout, `pnpm exec node packages/fuse-deck/src/bin.ts <command>` runs the CLI from
 source through Node's type stripping. It serves the built runtime in `dist/runtime`, so run
 `pnpm build` first.
@@ -52,7 +58,8 @@ loads it with Vite's `runnerImport`, rooted at `dist/`, for the first-paint attr
 color-scheme bootstrap and the theme check. React, React DOM and Fuse resolve from the same file.
 The bundler owns the whole Vite config: the deck directory is the root, no `vite.config` loads, the
 HTML shell comes from the bundler and the runtime from `dist/runtime/`. The runtime keeps React,
-Fuse and the deck manifest external.
+Fuse and the deck manifest external. Every asset ships as a file, never inlined, and the build copies
+`public/` itself, so each file the build reads from the deck passes the same check.
 
 ## Tests
 

@@ -7,21 +7,33 @@
  *
  * This plugin checks each import at resolution, in every mode. An import from a deck module, a
  * virtual module or a request with no importer must resolve to a real path inside the deck or
- * under a trusted root: the runtime's, React's, React DOM's, Fuse's and Vite's own, for its dev
+ * under a trusted root: the runtime's, React's, React DOM's, Fuse's, the optimizer cache's and Vite's own, for its dev
  * client. The plugin leaves a trusted file's own imports unchecked, so their dependencies resolve
  * wherever the install put them. Any other import fails with its specifier, its importer and the
  * file it reached.
  *
  * Vite's build resolves a `new URL("./file", import.meta.url)` asset itself, past every plugin's
  * `resolveId`, and emits the file. So the build also checks each asset it emits by the file it
- * came from.
+ * came from; the bundler turns inlining off, so every asset is emitted. A deck module's literal
+ * `new URL()` targets are checked before that, as the module is transformed, so Vite never reads
+ * an outside file to emit it.
  */
 
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import type { Plugin } from "vite";
 
-import { isInside } from "../deck/contained-file.ts";
+import { deckEntrySync, describeRefusal, isInside } from "../deck/contained-file.ts";
+
+/**
+ * Vite 8.3's own `assetImportMetaUrlRE`: a `new URL(<literal>, import.meta.url)` whose asset Vite
+ * reads itself, inlining it under `?inline` whatever `assetsInlineLimit` says. Its first group is the
+ * quoted target.
+ */
+const NEW_URL = /\bnew\s+URL\s*\(\s*('[^']+'|"[^"]+"|`[^`]+`)\s*,\s*import\.meta\.url\s*(?:,\s*)?\)/dg;
+
+/** A URL with a scheme, or a protocol-relative one: never a deck file. */
+const SCHEMED = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
 
 /** The file an id names, without its query or hash. */
 function fileOf(id: string): string {
@@ -50,7 +62,21 @@ export function containedResolutionPlugin(options: {
 }): Plugin {
   const root = path.resolve(options.deckRoot);
   const realRoot = realpathSync(root);
-  const trusted = options.trustedRoots.map((each) => realPath(each) ?? path.resolve(each));
+  // A trusted root that does not exist yet, such as the optimizer cache before its first run, is
+  // canonicalized once it does: its real path may differ from its spelling (macOS's `/var`).
+  const canonical = new Map<string, string>();
+  const trusted = () =>
+    options.trustedRoots.map((each) => {
+      const known = canonical.get(each);
+      if (known !== undefined) {
+        return known;
+      }
+      const real = realPath(each);
+      if (real !== undefined) {
+        canonical.set(each, real);
+      }
+      return real ?? path.resolve(each);
+    });
   const inDeck = (file: string) => isInside(realRoot, file) || isInside(root, file);
 
   /** Whether the importer's own imports are checked: a deck file, a virtual module or none. */
@@ -70,7 +96,7 @@ export function containedResolutionPlugin(options: {
     }
     // A path that does not exist reads nothing; Vite answers it as missing.
     const real = realPath(file);
-    if (real === undefined || inDeck(real) || trusted.some((each) => isInside(each, real))) {
+    if (real === undefined || inDeck(real) || trusted().some((each) => isInside(each, real))) {
       return undefined;
     }
     return real;
@@ -94,6 +120,36 @@ export function containedResolutionPlugin(options: {
         );
       }
       return resolved;
+    },
+    transform(code, id) {
+      // Before Vite's own plugin reads the file: the literal `new URL()` assets of a deck module.
+      if (!checksImports(id) || id.startsWith("\0")) {
+        return null;
+      }
+      for (const [, quoted = ""] of code.matchAll(NEW_URL)) {
+        const target = quoted.slice(1, -1);
+        // A template with an expression is a glob, which Vite resolves through `resolveId`.
+        if (SCHEMED.test(target) || target.includes("${")) {
+          continue;
+        }
+        const file = target.startsWith("/")
+          ? path.join(root, target)
+          : path.resolve(path.dirname(fileOf(id)), fileOf(target));
+        const entry = deckEntrySync(root, file, ["File"]);
+        const real = entry._tag === "OutsideDeck" ? escape(file) : undefined;
+        const reason =
+          real !== undefined
+            ? `which resolves to ${real}, outside the deck.`
+            : entry._tag === "Link" || entry._tag === "WrongKind"
+              ? describeRefusal(entry)
+              : undefined;
+        if (reason !== undefined) {
+          this.error(
+            `${fileOf(id)} names the asset "${target}", ${reason} A deck imports only its own files and the packages fuse-deck provides.`
+          );
+        }
+      }
+      return null;
     },
     generateBundle(_output, bundle) {
       for (const output of Object.values(bundle)) {

@@ -19,6 +19,14 @@ fuse-deck's `dependencies` too, or the build fails. deck-core takes the runtime 
 skill path from its host and resolves React, React DOM, Fuse and Vite's anchors from the running
 module.
 
+A deck is untrusted, self-contained input. Nothing in it runs in Node, nothing outside its directory
+is read, served or written for it, and it holds no symbolic links. Every path a host or the bundler
+reads, writes, lists, serves or copies goes through the one guard in
+`packages/deck-core/src/deck/contained-file.ts` (`deckEntry`, `deckEntrySync`); opening a deck
+refuses a link with `DeckEntryRefused`. Decks style slides with plain CSS: no Sass, Less, Stylus
+or CSS Modules. What Vite generates lives in storage the host owns (`Bundler.layer`'s
+`cacheRoot`), never in the deck.
+
 The browser runtime in `packages/deck-core/src/runtime` is plain React 19 with no Effect and no
 Node API. Slide motion uses React's `<ViewTransition>`; keep it to the slide change, `<Step>` and
 `<Morph>`, and keep the reduced-motion fallbacks in `deck.css`.

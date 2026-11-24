@@ -26,7 +26,7 @@ import { OpenRequestId } from "../src/contract/studio-rpc.ts";
 import type { DeckChanged, StudioState } from "../src/contract/studio-rpc.ts";
 import { DeckScopes } from "../src/server/deck-scopes.ts";
 import { RecentDecks } from "../src/server/recent-decks.ts";
-import { DECK_A, DECK_B, DECK_RUNTIME, writeDeck } from "./decks.ts";
+import { DECK_A, DECK_B, DECK_CACHE, DECK_RUNTIME, writeDeck } from "./decks.ts";
 
 /** A fresh open request id, as the renderer picks one. */
 const newRequestId = () => OpenRequestId.make(crypto.randomUUID());
@@ -46,9 +46,12 @@ const setup = Effect.fn("setup")(function* (
   const deckA = yield* Effect.promise(() => writeDeck(path.join(root, "a"), DECK_A));
   const deckB = yield* Effect.promise(() => writeDeck(path.join(root, "b"), DECK_B));
   const services = yield* Layer.build(
-    DeckScopes.layer({ embedderOrigin: EMBEDDER, runtimeRoot: DECK_RUNTIME, drainTimeout }).pipe(
-      Layer.provideMerge(recentDecks(path.join(root, "user-data")))
-    )
+    DeckScopes.layer({
+      embedderOrigin: EMBEDDER,
+      runtimeRoot: DECK_RUNTIME,
+      cacheRoot: DECK_CACHE,
+      drainTimeout,
+    }).pipe(Layer.provideMerge(recentDecks(path.join(root, "user-data"))))
   );
   const scopes = Context.get(services, DeckScopes);
   const recent = Context.get(services, RecentDecks);

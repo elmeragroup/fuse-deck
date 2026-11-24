@@ -8,7 +8,10 @@ import path from "node:path";
 
 import { pollDeck } from "../src/bundler/deck-poll.ts";
 
-/** A deck with one slide, a file outside it, and links in the deck to that file and its directory. */
+/**
+ * A deck with one slide, a file outside it, links in the deck to that file and its directory, and a
+ * link to the slide itself.
+ */
 const fixture = Effect.acquireRelease(
   Effect.promise(async () => {
     const parent = await mkdtemp(path.join(tmpdir(), "fuse-deck-poll-"));
@@ -20,13 +23,14 @@ const fixture = Effect.acquireRelease(
     await writeFile(path.join(outside, "secret.txt"), "one\n");
     await symlink(path.join(outside, "secret.txt"), path.join(deck, "slides", "linked.mdx"));
     await symlink(outside, path.join(deck, "linked"));
+    await symlink(path.join(deck, "slides", "cover.mdx"), path.join(deck, "slides", "alias.mdx"));
     return { parent, deck, outside };
   }),
   ({ parent }) => Effect.promise(() => rm(parent, { recursive: true, force: true }))
 );
 
 describe("pollDeck", () => {
-  it.live("reports no file that a symlink in the deck takes outside it", () =>
+  it.live("reports no file through a symlink in the deck, inside it or out", () =>
     Effect.gen(function* () {
       const { deck, outside } = yield* fixture;
       const reported: string[] = [];

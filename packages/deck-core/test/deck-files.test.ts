@@ -417,3 +417,139 @@ describe("DeckFiles writes", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 });
+
+describe("A deck holds no symbolic links", () => {
+  /** A deck with slides `cover` and `a`, and a deck-relative entry made by `make` before it opens. */
+  const openWith = Effect.fnUntraced(function* (make: (root: string) => Promise<void>) {
+    const root = path.join(yield* tempDir, "deck");
+    yield* scaffoldDeck({ directory: root, brief: Option.none(), theme: "neutral-elma-private" });
+    yield* Effect.promise(() => make(root));
+    return yield* Effect.result(Effect.service(DeckFiles).pipe(Effect.provide(DeckFiles.layerFrom(root))));
+  });
+
+  it.effect.each([
+    {
+      name: "a link to a file inside the deck",
+      make: async (root: string) => {
+        await mkdir(path.join(root, "assets"));
+        await symlink(path.join(root, "slides", "cover.mdx"), path.join(root, "assets", "copy.mdx"));
+      },
+      named: "assets/copy.mdx",
+    },
+    {
+      name: "a link to a directory inside the deck",
+      make: (root: string) => symlink(path.join(root, "slides"), path.join(root, "pages")),
+      named: "pages",
+    },
+    {
+      name: "a named pipe",
+      make: (root: string) => {
+        spawnSync("mkfifo", [path.join(root, "slides", "pipe.mdx")]);
+        return Promise.resolve();
+      },
+      named: "slides/pipe.mdx",
+    },
+  ])("refuses to open a deck holding $name, and names it", ({ make, named }) =>
+    Effect.gen(function* () {
+      const opened = yield* openWith(make);
+      const failure = Result.isFailure(opened) ? opened.failure : undefined;
+      assert.deepStrictEqual(
+        {
+          tag: failure?._tag,
+          named: failure !== undefined && "path" in failure && failure.path.endsWith(named),
+        },
+        { tag: "DeckEntryRefused", named: true }
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+
+  it.effect("opens a deck whose node_modules and .git hold links", () =>
+    Effect.gen(function* () {
+      const opened = yield* openWith(async (root) => {
+        await mkdir(path.join(root, "node_modules"));
+        await symlink(path.join(root, "slides"), path.join(root, "node_modules", "linked"));
+        await mkdir(path.join(root, ".git"));
+        await symlink(path.join(root, "slides"), path.join(root, ".git", "linked"));
+      });
+      assert.strictEqual(Result.isSuccess(opened), true);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+
+  type LinkCase = {
+    readonly name: string;
+    /** Makes a link, after the deck opened, to a file inside the deck. */
+    readonly link: (root: string) => Promise<void>;
+    readonly use: (deck: DeckFiles["Service"]) => Effect.Effect<unknown, { readonly _tag: string }>;
+  };
+  const linkCases: readonly LinkCase[] = [
+    {
+      name: "read a slide whose file links to another slide",
+      link: async (root) => {
+        await rm(path.join(root, "slides", "a.mdx"));
+        await symlink(path.join(root, "slides", "cover.mdx"), path.join(root, "slides", "a.mdx"));
+      },
+      use: (deck) => deck.readSlide(id("a")),
+    },
+    {
+      name: "list slides beside a linked orphan",
+      link: (root) =>
+        symlink(path.join(root, "slides", "cover.mdx"), path.join(root, "slides", "orphan.mdx")),
+      use: (deck) => deck.load,
+    },
+    {
+      name: "read a deck.json that links to a copy inside the deck",
+      link: async (root) => {
+        await writeFile(path.join(root, "copy.json"), await readFile(path.join(root, "deck.json")));
+        await rm(path.join(root, "deck.json"));
+        await symlink(path.join(root, "copy.json"), path.join(root, "deck.json"));
+      },
+      use: (deck) => deck.load,
+    },
+    {
+      name: "remove a slide whose file links to another slide",
+      link: async (root) => {
+        await rm(path.join(root, "slides", "a.mdx"));
+        await symlink(path.join(root, "slides", "cover.mdx"), path.join(root, "slides", "a.mdx"));
+      },
+      use: (deck) => deck.removeSlide(id("a")),
+    },
+  ];
+
+  it.effect.each(linkCases)("refuses to $name made after the deck opened", ({ link, use }) =>
+    Effect.gen(function* () {
+      const deck = yield* deckWith(["a"]);
+      yield* Effect.promise(() => link(deck.root));
+      const order = yield* orderOnDisk(deck.root).pipe(Effect.orElseSucceed(() => []));
+      const result = yield* Effect.result(use(deck));
+      assert.deepStrictEqual(
+        {
+          outcome: Result.isFailure(result) ? result.failure._tag : "succeeded",
+          order: yield* orderOnDisk(deck.root).pipe(Effect.orElseSucceed(() => [])),
+          cover: yield* Effect.promise(() => readFile(path.join(deck.root, "slides", "cover.mdx"), "utf8")),
+        },
+        {
+          outcome: "DeckIoFailed",
+          order,
+          cover: yield* Effect.promise(() => readFile(path.join(deck.root, "slides", "cover.mdx"), "utf8")),
+        }
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+
+  it.effect("refuses a lock file that is not a regular file, without waiting on it", () =>
+    Effect.gen(function* () {
+      const deck = yield* deckWith([]);
+      spawnSync("mkfifo", [path.join(deck.root, ".fuse-deck.lock")]);
+      const result = yield* Effect.result(
+        deck.addSlide(id("b"), { _tag: "End" }, "# b\n").pipe(Effect.timeout("3 seconds"))
+      );
+      assert.deepStrictEqual(
+        {
+          outcome: Result.isFailure(result) ? result.failure._tag : "succeeded",
+          order: yield* orderOnDisk(deck.root),
+        },
+        { outcome: "LockFailed", order: ["cover"] }
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+});

@@ -18,7 +18,6 @@ import * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import path from "node:path";
 
-import { isInside } from "../deck/contained-file.ts";
 import { BUILD_MARKER, DEFAULT_OUT } from "./build-output.ts";
 
 /** What happened to a file between two scans, named as chokidar and Vite name it. */
@@ -28,17 +27,12 @@ export type DeckFileEvent = "add" | "change" | "unlink";
 const POLL_INTERVAL = Duration.millis(100);
 
 /**
- * Directories the poll skips, by name, at any depth: what Vite's own watcher ignores, and
- * `.fuse-deck`, which holds the optimizer cache. The scan also skips the deck's `dist`, where
+ * Directories the poll skips, by name, at any depth: what Vite's own watcher ignores. The scan
+ * also skips the deck's `dist`, where
  * `build` writes by default, and any directory holding a build's marker, so a build during `dev`
  * reports nothing.
  */
-const SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set([
-  ".git",
-  "node_modules",
-  ".fuse-deck",
-  "test-results",
-]);
+const SKIPPED_DIRECTORIES: ReadonlySet<string> = new Set([".git", "node_modules", "test-results"]);
 
 /** How many directory reads and stats one scan runs at once. */
 const SCAN_CONCURRENCY = 16;
@@ -83,10 +77,7 @@ export const pollDeck = Effect.fn("pollDeck")(function* (
 function scan(fs: FileSystem.FileSystem, root: string): Effect.Effect<Snapshot> {
   // A file or directory that goes away mid-scan counts as absent until the next scan.
   const buildOutput = path.join(root, DEFAULT_OUT);
-  const walk = (
-    realRoot: string,
-    directory: string
-  ): Effect.Effect<ReadonlyArray<readonly [string, string]>> =>
+  const walk = (directory: string): Effect.Effect<ReadonlyArray<readonly [string, string]>> =>
     fs.readDirectoryEntries(directory).pipe(
       Effect.orElseSucceed((): ReadonlyArray<FileSystem.DirectoryEntry> => []),
       Effect.flatMap((entries) =>
@@ -99,14 +90,14 @@ function scan(fs: FileSystem.FileSystem, root: string): Effect.Effect<Snapshot> 
                 if (entry.type === "Directory") {
                   return SKIPPED_DIRECTORIES.has(entry.name) || file === buildOutput
                     ? Effect.succeed([])
-                    : walk(realRoot, file);
+                    : walk(file);
                 }
-                // A symbolic link counts when its real path is a file inside the deck, which is
-                // all the studio and Vite read through it. A linked directory is not followed, so
-                // a link cycle cannot hold the scan.
-                return fs.realPath(file).pipe(
-                  Effect.filterOrFail((real) => isInside(realRoot, real)),
-                  Effect.flatMap((real) => fs.stat(real)),
+                // Only a regular file counts. A deck holds no symbolic links, so a link made after
+                // it opened reports nothing, and a linked directory is not followed.
+                if (entry.type !== "File") {
+                  return Effect.succeed([]);
+                }
+                return fs.lstat(file).pipe(
                   Effect.map((info) => (info.type === "File" ? [[file, signature(info)] as const] : [])),
                   Effect.orElseSucceed(() => [])
                 );
@@ -115,11 +106,7 @@ function scan(fs: FileSystem.FileSystem, root: string): Effect.Effect<Snapshot> 
             ).pipe(Effect.map((files) => files.flat()))
       )
     );
-  return fs.realPath(root).pipe(
-    Effect.orElseSucceed(() => root),
-    Effect.flatMap((realRoot) => walk(realRoot, root)),
-    Effect.map((files) => new Map(files))
-  );
+  return walk(root).pipe(Effect.map((files) => new Map(files)));
 }
 
 /** What the poll compares between scans. */

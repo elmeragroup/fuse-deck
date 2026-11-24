@@ -2,8 +2,10 @@
   "extends": ["//"],
   "tasks": {
     // The process tests spawn the built bin, the file the packed tarball ships.
+    // The bin keeps Vite's cache in the user cache directory these name (see `userCacheRoot`).
     "test": {
-      "dependsOn": ["build"]
+      "dependsOn": ["build"],
+      "passThroughEnv": ["XDG_CACHE_HOME", "LOCALAPPDATA"]
     },
     // The packed smoke test installs this package's tarball beside Fuse's published one, outside
     // the workspace.

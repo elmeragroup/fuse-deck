@@ -5,6 +5,7 @@
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 /** A deck to write: its title and its slides' ids in order. */
@@ -48,3 +49,6 @@ export const DECK_RUNTIME = path.join(
   "dist",
   "runtime"
 );
+
+/** The dev servers' cache for these tests, outside every deck, in the system's temporary directory. */
+export const DECK_CACHE = path.join(tmpdir(), "fuse-deck-studio-test-cache");

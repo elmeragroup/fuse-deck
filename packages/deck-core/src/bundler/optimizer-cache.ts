@@ -6,8 +6,13 @@
  * own cache directory, named after a fingerprint of the files the optimizer reads from and of the
  * install's lockfile.
  *
+ * The caches live in storage the host owns, never in the deck: the CLI's user cache directory, or
+ * the studio's user data directory. A deck is untrusted input, and Vite would otherwise write into
+ * it and read its own output back from there. Decks share that storage, so the name includes the
+ * deck's real path too.
+ *
  * Nothing here deletes a cache. Another `dev` on the same deck may be serving from any of them, and
- * an install that changes leaves one directory behind, which `.fuse-deck/` holds out of the way.
+ * an install that changes leaves one directory behind.
  */
 
 import * as Effect from "effect/Effect";
@@ -18,8 +23,8 @@ import path from "node:path";
 
 import type { DependencyPackage } from "./resolve-root.ts";
 
-/** The directory, inside the deck, that holds one optimizer cache per install. */
-const CACHES = path.join(".fuse-deck", "vite");
+/** The directory, in the host's cache root, that holds one optimizer cache per deck and install. */
+const CACHES = "vite";
 
 /** The lockfiles of npm, pnpm, Yarn and Bun, which record the versions of every installed package. */
 const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"];
@@ -52,12 +57,15 @@ export type OptimizerInputs = {
  * moved or upgraded, or the lockfile changes: the name hashes each `package.json`'s bytes, the
  * identity, size and times of each `package.json` and entry file, the runtime entry's identity,
  * size, times and bytes, and the lockfile's bytes. A file that cannot be read counts as missing.
+ * Each deck, by its real path, gets its own directory.
  *
+ * @param cacheRoot - The host's cache directory for fuse-deck.
  * @param deckRoot - The deck directory.
  * @param inputs - The packages, the runtime entry and the install.
  * @returns The cache directory and the lockfile it includes.
  */
 export const optimizerCache = Effect.fn("optimizerCache")(function* (
+  cacheRoot: string,
   deckRoot: string,
   { packages, runtimeEntry, install }: OptimizerInputs
 ) {
@@ -77,6 +85,9 @@ export const optimizerCache = Effect.fn("optimizerCache")(function* (
     );
   const bytes = (file: string) => fs.readFile(file).pipe(Effect.orElseSucceed(() => new Uint8Array()));
   const hash = createHash("sha256");
+  hash.update(
+    `deck:${yield* fs.realPath(deckRoot).pipe(Effect.orElseSucceed(() => path.resolve(deckRoot)))}\n`
+  );
   for (const { root, entry } of packages) {
     const manifest = path.join(root, "package.json");
     hash.update(yield* stamp(manifest));
@@ -91,7 +102,7 @@ export const optimizerCache = Effect.fn("optimizerCache")(function* (
     hash.update(yield* bytes(lockfile.value));
   }
   return {
-    directory: path.join(deckRoot, CACHES, hash.digest("hex").slice(0, 16)),
+    directory: path.join(cacheRoot, CACHES, hash.digest("hex").slice(0, 16)),
     lockfile,
   } satisfies OptimizerCache;
 });

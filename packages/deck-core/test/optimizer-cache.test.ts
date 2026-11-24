@@ -20,10 +20,12 @@ const fixture = (lockfile: Option.Option<string>) =>
     Effect.promise(async () => {
       const parent = await mkdtemp(path.join(tmpdir(), "fuse-deck-cache-"));
       const deck = path.join(parent, "talk");
+      const cacheRoot = path.join(parent, "user-cache");
       const install = path.join(parent, "install");
       const root = path.join(install, "node_modules", "react");
       const fuseDeck = path.join(install, "node_modules", "@elmeragroup", "fuse-deck");
       await mkdir(deck, { recursive: true });
+      await mkdir(path.join(parent, "other-talk"), { recursive: true });
       await mkdir(root, { recursive: true });
       const runtimeEntry = path.join(fuseDeck, "dist", "runtime", "main.js");
       await mkdir(path.dirname(runtimeEntry), { recursive: true });
@@ -41,6 +43,7 @@ const fixture = (lockfile: Option.Option<string>) =>
       return {
         parent,
         deck,
+        cacheRoot,
         root,
         install,
         fuseDeck,
@@ -63,13 +66,24 @@ async function rewriteKeepingTimes(file: string, text: string): Promise<void> {
 }
 
 describe("optimizerCache", () => {
-  it.effect("names one directory in the deck while the install is unchanged", () =>
+  it.effect("names one directory in the host's cache while the install is unchanged", () =>
     Effect.gen(function* () {
-      const { deck, install, inputs } = yield* fixture(Option.some("package-lock.json"));
-      const first = yield* optimizerCache(deck, inputs);
-      assert.strictEqual((yield* optimizerCache(deck, inputs)).directory, first.directory);
-      assert.strictEqual(path.dirname(first.directory), path.join(deck, ".fuse-deck", "vite"));
+      const { deck, cacheRoot, install, inputs } = yield* fixture(Option.some("package-lock.json"));
+      const first = yield* optimizerCache(cacheRoot, deck, inputs);
+      assert.strictEqual((yield* optimizerCache(cacheRoot, deck, inputs)).directory, first.directory);
+      assert.strictEqual(path.dirname(first.directory), path.join(cacheRoot, "vite"));
       assert.deepStrictEqual(first.lockfile, Option.some(path.join(install, "package-lock.json")));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+
+  it.effect("names another directory for another deck in the same cache", () =>
+    Effect.gen(function* () {
+      const { parent, deck, cacheRoot, inputs } = yield* fixture(Option.some("package-lock.json"));
+      const other = path.join(parent, "other-talk");
+      assert.notStrictEqual(
+        (yield* optimizerCache(cacheRoot, other, inputs)).directory,
+        (yield* optimizerCache(cacheRoot, deck, inputs)).directory
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 
@@ -102,17 +116,17 @@ describe("optimizerCache", () => {
     Effect.gen(function* () {
       // Oracle: Vite must not reuse what it optimized from the old files.
       const installed = yield* fixture(Option.some(lockfile));
-      const { deck, inputs } = installed;
-      const before = yield* optimizerCache(deck, inputs);
+      const { deck, cacheRoot, inputs } = installed;
+      const before = yield* optimizerCache(cacheRoot, deck, inputs);
       yield* Effect.promise(() => change(installed));
-      assert.notStrictEqual((yield* optimizerCache(deck, inputs)).directory, before.directory);
+      assert.notStrictEqual((yield* optimizerCache(cacheRoot, deck, inputs)).directory, before.directory);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 
   it.effect("finds no lockfile for an install without one, so the start re-optimizes", () =>
     Effect.gen(function* () {
-      const { deck, inputs } = yield* fixture(Option.none());
-      assert.isTrue(Option.isNone((yield* optimizerCache(deck, inputs)).lockfile));
+      const { deck, cacheRoot, inputs } = yield* fixture(Option.none());
+      assert.isTrue(Option.isNone((yield* optimizerCache(cacheRoot, deck, inputs)).lockfile));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 });

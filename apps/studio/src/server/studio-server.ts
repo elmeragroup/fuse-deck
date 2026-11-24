@@ -27,6 +27,7 @@ import * as Schema from "effect/Schema";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
 import { createServer } from "node:http";
+import path from "node:path";
 
 import { BACKEND_STOP_DEADLINE, StudioLaunch, StudioReady } from "../contract/studio-launch.ts";
 import { StudioRpcs } from "../contract/studio-rpc.ts";
@@ -51,9 +52,12 @@ const encodeReady = Schema.encodeEffect(Schema.fromJsonString(StudioReady));
 function studioLayer(launch: StudioLaunch, runtimeRoot: string) {
   const recent = RecentDecks.layer(launch.userDataDirectory);
   return Layer.mergeAll(
-    DeckScopes.layer({ embedderOrigin: launch.origin, runtimeRoot, drainTimeout: DRAIN_TIMEOUT }).pipe(
-      Layer.provideMerge(recent)
-    ),
+    DeckScopes.layer({
+      embedderOrigin: launch.origin,
+      runtimeRoot,
+      cacheRoot: path.join(launch.userDataDirectory, "deck-cache"),
+      drainTimeout: DRAIN_TIMEOUT,
+    }).pipe(Layer.provideMerge(recent)),
     StudioAuth.layer(Redacted.make(launch.bootstrap)),
     RpcSerialization.layerJson
   ).pipe(

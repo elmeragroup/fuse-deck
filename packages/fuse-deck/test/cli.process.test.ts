@@ -17,6 +17,11 @@ const RUNTIME_ENTRY = fileURLToPath(new URL("../dist/runtime/main.js", import.me
 /** A file in the checkout outside the deck, the package and its dependencies. */
 const CHECKOUT_MANIFEST = fileURLToPath(new URL("../../../package.json", import.meta.url));
 
+/** The bin's environment: the user cache in the test's workspace, so no run touches the real one. */
+function cliEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, XDG_CACHE_HOME: path.join(workspace, "user-cache") };
+}
+
 /** What one run of the bin printed and how it exited. */
 type Run = { readonly status: number | null; readonly stdout: string; readonly stderr: string };
 
@@ -26,7 +31,7 @@ function fuseDeck(cwd: string, args: readonly string[]): Run {
       `${BIN} is missing. Run \`pnpm turbo run build --filter=@elmeragroup/fuse-deck\` first, which builds deck-core too.`
     );
   }
-  const result = spawnSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8" });
+  const result = spawnSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8", env: cliEnv() });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
@@ -82,6 +87,7 @@ function createDeck(): string {
 async function startDev(deck: string): Promise<{ readonly url: string; readonly stop: () => Promise<void> }> {
   const child = spawn(process.execPath, [BIN, "dev", "--json"], {
     cwd: deck,
+    env: cliEnv(),
     stdio: ["ignore", "pipe", "pipe"],
   });
   const exited = new Promise<void>((resolve) => {
@@ -112,6 +118,22 @@ async function startDev(deck: string): Promise<{ readonly url: string; readonly 
       return exited;
     },
   };
+}
+
+/**
+ * Run `use` against a dev server in `deck`, or nothing when dev refuses to start, as it does for a
+ * deck that holds a symbolic link.
+ */
+async function withDevIfServed(deck: string, use: (url: string) => Promise<void>): Promise<void> {
+  const dev = await startDev(deck).catch(() => undefined);
+  if (dev === undefined) {
+    return;
+  }
+  try {
+    await use(dev.url);
+  } finally {
+    await dev.stop();
+  }
 }
 
 /**
@@ -433,20 +455,17 @@ describe("fuse-deck --json", () => {
       const ranInBuild = existsSync(marker);
       await rm(marker, { force: true });
 
-      const dev = await startDev(deck);
-      try {
+      await withDevIfServed(deck, async (url) => {
         // The page, every stylesheet and script it links, the slide and the stylesheets the slide
         // imports: each request that would make Vite load the deck's code.
-        const page = await (await fetch(dev.url)).text();
+        const page = await (await fetch(url)).text();
         const linked = [...page.matchAll(/(?:href|src)="([^"]+)"/g)].flatMap(([, href]) =>
           href === undefined ? [] : [href]
         );
         for (const href of [...linked, "slides/cover.mdx", "styles/theme.scss", "styles/deck.css"]) {
-          await fetch(new URL(href, dev.url));
+          await fetch(new URL(href, url));
         }
-      } finally {
-        await dev.stop();
-      }
+      });
       expect({ build: ranInBuild, dev: existsSync(marker) }).toEqual({ build: false, dev: false });
     }
   );
@@ -474,13 +493,10 @@ describe("fuse-deck --json", () => {
     const build = fuseDeck(deck, ["build", "--json"]);
     const built = await builtText(path.join(deck, "dist"));
 
-    const dev = await startDev(deck);
     let served = "";
-    try {
-      served = await (await fetch(new URL("styles/deck.css", dev.url))).text();
-    } finally {
-      await dev.stop();
-    }
+    await withDevIfServed(deck, async (url) => {
+      served = await (await fetch(new URL("styles/deck.css", url))).text();
+    });
     expect({ built: built.includes(OUTSIDE_SECRET), served: served.includes(OUTSIDE_SECRET) }).toEqual({
       built: false,
       served: false,
@@ -488,19 +504,19 @@ describe("fuse-deck --json", () => {
     expect(build.status).toBe(1);
   });
 
-  it("serves no file a symlink in the deck takes outside it", async () => {
+  it("serves no file a symlink made in the deck after dev started takes outside it", async () => {
     const deck = createDeck();
     const outside = path.join(workspace, "outside");
     await mkdir(outside);
     await writeFile(path.join(outside, "secret.txt"), OUTSIDE_SECRET);
     await mkdir(path.join(deck, "public"));
     await mkdir(path.join(deck, "assets"));
-    await symlink(path.join(outside, "secret.txt"), path.join(deck, "assets", "file.txt"));
-    await symlink(outside, path.join(deck, "assets", "directory"));
-    await symlink(path.join(outside, "secret.txt"), path.join(deck, "public", "file.txt"));
-    await symlink(outside, path.join(deck, "public", "directory"));
     const dev = await startDev(deck);
     try {
+      await symlink(path.join(outside, "secret.txt"), path.join(deck, "assets", "file.txt"));
+      await symlink(outside, path.join(deck, "assets", "directory"));
+      await symlink(path.join(outside, "secret.txt"), path.join(deck, "public", "file.txt"));
+      await symlink(outside, path.join(deck, "public", "directory"));
       const requests = [
         "assets/file.txt",
         "assets/file.txt?raw",
@@ -545,8 +561,8 @@ describe("fuse-deck --json", () => {
     { name: "a ?raw import", ...importing("../../outside/secret.txt?raw") },
     { name: "a ?url import", ...importing("../../outside/secret.txt?url", "<a href={secret}>link</a>") },
     { name: "a plain asset import", ...importing("../../outside/secret.png", '<img src={secret} alt="" />') },
-    { name: "a symlinked file", ...importing("../assets/linked.js") },
-    { name: "a symlinked directory", ...importing("../assets/linked/secret.js") },
+    { name: "a symlinked file", ...importing("../assets/linked.js"), named: "assets/linked" },
+    { name: "a symlinked directory", ...importing("../assets/linked/secret.js"), named: "assets/linked" },
     {
       name: "a new URL() asset",
       slide: 'export const secret = new URL("../../outside/secret.png", import.meta.url).href;',
@@ -578,8 +594,11 @@ describe("fuse-deck --json", () => {
       await writeFile(path.join(outside, "secret.txt"), text);
       await writeFile(path.join(outside, "secret.png"), text);
       await mkdir(path.join(deck, "assets"));
-      await symlink(path.join(outside, "secret.js"), path.join(deck, "assets", "linked.js"));
-      await symlink(outside, path.join(deck, "assets", "linked"));
+      // Only the rows that import through a link have one: a deck holding a link does not open.
+      if (slide.includes("linked")) {
+        await symlink(path.join(outside, "secret.js"), path.join(deck, "assets", "linked.js"));
+        await symlink(outside, path.join(deck, "assets", "linked"));
+      }
       await writeFile(
         path.join(deck, "assets", "worker.js"),
         'import secret from "../../outside/secret.js";\npostMessage(secret);\n'
@@ -591,12 +610,11 @@ describe("fuse-deck --json", () => {
       const build = fuseDeck(deck, ["build", "--json"]);
       const built = await builtText(path.join(deck, "dist"));
 
-      const dev = await startDev(deck);
       const leaked: string[] = [];
-      try {
+      await withDevIfServed(deck, async (url) => {
         // The slide and each module or asset it imports, then the worker and the outside files, in
         // the order a page fetches them: Vite serves an outside file once a module imported it.
-        const code = await (await fetch(new URL("slides/cover.mdx", dev.url))).text();
+        const code = await (await fetch(new URL("slides/cover.mdx", url))).text();
         const imports = [...code.matchAll(/(?:from |import\(|new URL\()"([^"]+)"/g)].flatMap(([, href]) =>
           href === undefined ? [] : [href]
         );
@@ -608,13 +626,11 @@ describe("fuse-deck --json", () => {
           `@fs${realpathSync(outside)}/secret.js`,
         ];
         for (const href of requests) {
-          if ((await (await fetch(new URL(href, dev.url))).text()).includes(OUTSIDE_SECRET)) {
+          if ((await (await fetch(new URL(href, url))).text()).includes(OUTSIDE_SECRET)) {
             leaked.push(href);
           }
         }
-      } finally {
-        await dev.stop();
-      }
+      });
       expect({ built: built.includes(OUTSIDE_SECRET), served: leaked }).toEqual({ built: false, served: [] });
       expect(build.status).toBe(1);
       expect(oneDocument(build, Tagged).message).toContain(placed(named));
@@ -662,8 +678,10 @@ describe("fuse-deck --json", () => {
       expect(css).toContain(remoteUrl);
       expect(css).toMatch(/@layer base\s*\{[^]*\.inner\s*\{[^]*\.base\s*\{/);
       expect(css).toMatch(/@media print\s*\{\s*\.print/);
-      // The nested stylesheet's `url()` still names the image in `styles/`, which Vite inlines.
-      expect(css).toContain(`data:image/png;base64,${Buffer.from("png").toString("base64")}`);
+      // The nested stylesheet's `url()` still names the image in `styles/`, which Vite emits as a
+      // file: it inlines no asset.
+      expect(css).toMatch(/url\(\.?\/?image-[\w-]+\.png\)/);
+      expect(css).not.toContain("data:image/png");
 
       const dev = await startDev(deck);
       try {
@@ -707,5 +725,323 @@ describe("fuse-deck --json", () => {
     const run = fuseDeck(workspace, ["--help", "--json"]);
     expect(run.status).toBe(0);
     expect(run.stdout).toContain("USAGE");
+  });
+});
+
+describe("a deck is self-contained", () => {
+  /** Write each deck-relative file of `files` into `deck`. */
+  const writeFiles = async (deck: string, files: Readonly<Record<string, string>>) => {
+    for (const [file, text] of Object.entries(files)) {
+      await mkdir(path.dirname(path.join(deck, file)), { recursive: true });
+      await writeFile(path.join(deck, file), text);
+    }
+  };
+
+  it("refuses to build or serve a deck that holds a symbolic link, and names it", async () => {
+    const deck = createDeck();
+    await mkdir(path.join(deck, "assets"));
+    await symlink(path.join(deck, "slides", "cover.mdx"), path.join(deck, "assets", "copy.mdx"));
+    const build = fuseDeck(deck, ["build", "--json"]);
+    const document = oneDocument(build, Tagged);
+    const dev = await startDev(deck).then(
+      async (started) => {
+        await started.stop();
+        return "served";
+      },
+      () => "refused"
+    );
+    expect({ status: build.status, tag: document._tag, dev }).toEqual({
+      status: 1,
+      tag: "DeckEntryRefused",
+      dev: "refused",
+    });
+    expect(document.message).toContain(path.join("assets", "copy.mdx"));
+    expect(existsSync(path.join(deck, "dist"))).toBe(false);
+  });
+
+  it("serves nothing through a link made after the dev server started, inside the deck or out", async () => {
+    const deck = createDeck();
+    await mkdir(path.join(deck, "public"));
+    await mkdir(path.join(deck, "assets"));
+    const dev = await startDev(deck);
+    try {
+      await symlink(path.join(deck, "deck.json"), path.join(deck, "assets", "file.json"));
+      await symlink(path.join(deck, "slides"), path.join(deck, "assets", "directory"));
+      await symlink(path.join(deck, "deck.json"), path.join(deck, "public", "file.json"));
+      const requests = [
+        "assets/file.json",
+        "assets/file.json?raw",
+        "assets/directory/cover.mdx",
+        "assets/directory/cover.mdx?raw",
+        "file.json",
+        `@fs${realpathSync(deck)}/assets/file.json?raw`,
+      ];
+      const served: string[] = [];
+      for (const request of requests) {
+        const response = await fetch(new URL(request, dev.url));
+        if (response.status !== 403) {
+          served.push(`${request} ${String(response.status)}`);
+        }
+      }
+      expect(served).toEqual([]);
+      expect((await fetch(new URL("deck.json", dev.url))).status).toBe(200);
+    } finally {
+      await dev.stop();
+    }
+  });
+
+  it("keeps the optimizer cache out of the deck, in the user cache", async () => {
+    const deck = createDeck();
+    const build = fuseDeck(deck, ["build", "--json"]);
+    expect(build.status, build.stderr).toBe(0);
+    const dev = await startDev(deck);
+    try {
+      // A slide imports React's JSX runtime, which the dev server serves from the moved cache.
+      const slide = await fetch(new URL("slides/cover.mdx", dev.url));
+      expect({
+        status: slide.status,
+        cache: (await slide.text()).includes("/deps/react_jsx-dev-runtime"),
+      }).toEqual({
+        status: 200,
+        cache: true,
+      });
+    } finally {
+      await dev.stop();
+    }
+    expect({
+      deck: (await readdir(deck)).toSorted(),
+      cache: existsSync(path.join(workspace, "user-cache", "fuse-deck", "vite")),
+    }).toEqual({ deck: [".gitignore", "AGENTS.md", "BRIEF.md", "deck.json", "dist", "slides"], cache: true });
+  });
+
+  /** A small file outside the deck, within Vite's default 4 KiB inline limit. */
+  const SMALL = `${OUTSIDE_SECRET} small`;
+  /** Whether `text` holds the secret as written or inside a data: URL, base64 or percent-encoded. */
+  const leaks = (text: string) => {
+    const payloads = [...text.matchAll(/data:[^,"')\s]*,([^"')\s]+)/g)].map(([match, payload = ""]) => {
+      try {
+        return match.includes(";base64,")
+          ? Buffer.from(payload, "base64").toString("utf8")
+          : decodeURIComponent(payload);
+      } catch {
+        return payload;
+      }
+    });
+    return [text, ...payloads].some((each) => each.includes(OUTSIDE_SECRET));
+  };
+  it.each([
+    {
+      name: "a small new URL() asset",
+      slide: 'export const secret = new URL("../../outside/secret.png", import.meta.url).href;',
+      render: '<img src={secret} alt="" />',
+    },
+    {
+      name: "a small SVG through new URL()",
+      slide: 'export const secret = new URL("../../outside/secret.svg", import.meta.url).href;',
+      render: '<img src={secret} alt="" />',
+    },
+    {
+      name: "a template-literal new URL()",
+      slide:
+        'const name = "secret";\nexport const secret = new URL(`../../outside/${name}.png`, import.meta.url).href;',
+      render: '<img src={secret} alt="" />',
+      // Vite leaves a template that leaves the deck for the browser to resolve, so the build passes.
+      status: 0,
+    },
+    {
+      name: "a backtick new URL() of an SVG with ?inline",
+      slide: "export const secret = new URL(`../../outside/secret.svg?inline`, import.meta.url).href;",
+      render: '<img src={secret} alt="" />',
+    },
+    {
+      name: "a spaced new URL () of an SVG with ?inline",
+      slide: 'export const secret = new URL ("../../outside/secret.svg?inline", import.meta.url).href;',
+      render: '<img src={secret} alt="" />',
+    },
+    {
+      name: "a new URL() of an SVG with ?inline and a trailing comma",
+      slide: 'export const secret = new URL("../../outside/secret.svg?inline", import.meta.url,).href;',
+      render: '<img src={secret} alt="" />',
+    },
+    {
+      name: "an ?inline import",
+      slide: 'import secret from "../../outside/secret.css?inline";',
+      render: "{secret}",
+    },
+  ])("builds and serves no outside file, through $name", async ({ slide, render, status = 1 }) => {
+    const deck = createDeck();
+    const outside = path.join(workspace, "outside");
+    await mkdir(outside);
+    await writeFile(path.join(outside, "secret.png"), SMALL);
+    await writeFile(path.join(outside, "secret.css"), `.a::after { content: "${SMALL}"; }\n`);
+    await writeFile(
+      path.join(outside, "secret.svg"),
+      `<svg xmlns="http://www.w3.org/2000/svg"><text>${SMALL}</text></svg>`
+    );
+    await writeFile(path.join(deck, "slides", "cover.mdx"), `${slide}\n\n# Talk\n\n${render}\n`);
+    const build = fuseDeck(deck, ["build", "--json"]);
+    const built = await builtText(path.join(deck, "dist"));
+    const dev = await startDev(deck);
+    const leaked: string[] = [];
+    try {
+      const code = await (await fetch(new URL("slides/cover.mdx", dev.url))).text();
+      if (leaks(code)) {
+        leaked.push("slides/cover.mdx");
+      }
+      const urls = [...code.matchAll(/(?:from |import\(|new URL\()"([^"]+)"/g)].flatMap(([, href]) =>
+        href === undefined ? [] : [href]
+      );
+      for (const href of urls) {
+        if (leaks(await (await fetch(new URL(href, new URL("slides/", dev.url)))).text())) {
+          leaked.push(href);
+        }
+      }
+    } finally {
+      await dev.stop();
+    }
+    expect({
+      built: leaks(built),
+      served: leaked,
+      status: build.status,
+    }).toEqual({ built: false, served: [], status });
+  });
+
+  it.each([
+    { name: "a percent-encoded url()", css: ".a { background: url(%2E%2E/%2E%2E/outside/secret.svg); }\n" },
+    {
+      name: "a lower-case percent-encoded url()",
+      css: ".a { background: url(%2e%2e/%2e%2e/outside/secret.svg); }\n",
+    },
+    { name: "an encoded slash in a url()", css: ".a { background: url(..%2F..%2Foutside%2Fsecret.svg); }\n" },
+    { name: "a percent-encoded @import", css: '@import "%2E%2E/%2E%2E/outside/secret.css";\n' },
+  ])("reads no outside file through $name, in dev or build", async ({ css }) => {
+    const deck = createDeck();
+    const outside = path.join(workspace, "outside");
+    await mkdir(outside);
+    await writeFile(
+      path.join(outside, "secret.svg"),
+      `<svg xmlns="http://www.w3.org/2000/svg"><text>${SMALL}</text></svg>`
+    );
+    await writeFile(path.join(outside, "secret.css"), `.b::after { content: "${SMALL}"; }\n`);
+    await writeFiles(deck, {
+      "styles/deck.css": css,
+      "slides/cover.mdx": 'import "../styles/deck.css";\n\n# Talk\n',
+    });
+    const build = fuseDeck(deck, ["build", "--json"]);
+    const built = await builtText(path.join(deck, "dist"));
+    const dev = await startDev(deck);
+    let served = "";
+    try {
+      served = await (await fetch(new URL("styles/deck.css", dev.url))).text();
+    } finally {
+      await dev.stop();
+    }
+    expect({ built: leaks(built), served: leaks(served), status: build.status }).toEqual({
+      built: false,
+      served: false,
+      status: 1,
+    });
+  });
+
+  it.each([
+    {
+      name: "a CSS Module",
+      files: {
+        "styles/deck.module.css": ".title { color: red; }\n",
+        "slides/cover.mdx":
+          'import styles from "../styles/deck.module.css";\n\n# Talk\n\n<p className={styles.title}>x</p>\n',
+      },
+    },
+    {
+      name: "a CSS Module that composes a class from outside the deck",
+      files: {
+        "styles/deck.module.css": '.title { composes: secret from "../../outside.module.css"; }\n',
+        "slides/cover.mdx":
+          'import styles from "../styles/deck.module.css";\n\n# Talk\n\n<p className={styles.title}>x</p>\n',
+      },
+    },
+  ])("refuses $name in dev and build", async ({ files }) => {
+    const deck = createDeck();
+    await writeFile(
+      path.join(workspace, "outside.module.css"),
+      `.secret::after { content: "${OUTSIDE_SECRET}"; }\n`
+    );
+    await writeFiles(deck, files);
+    const build = fuseDeck(deck, ["build", "--json"]);
+    const built = await builtText(path.join(deck, "dist"));
+    const dev = await startDev(deck);
+    let served = "";
+    try {
+      served = await (await fetch(new URL("styles/deck.module.css", dev.url))).text();
+    } finally {
+      await dev.stop();
+    }
+    expect({
+      status: build.status,
+      built: built.includes(OUTSIDE_SECRET),
+      served: served.includes(OUTSIDE_SECRET),
+    }).toEqual({
+      status: 1,
+      built: false,
+      served: false,
+    });
+    expect(oneDocument(build, Tagged).message).toContain("CSS Modules");
+  });
+
+  it("copies no outside file through a link in public/", async () => {
+    const deck = createDeck();
+    await writeFile(path.join(workspace, "secret.txt"), OUTSIDE_SECRET);
+    await mkdir(path.join(deck, "public"));
+    await symlink(path.join(workspace, "secret.txt"), path.join(deck, "public", "secret.txt"));
+    const build = fuseDeck(deck, ["build", "--json"]);
+    expect({
+      status: build.status,
+      built: (await builtText(path.join(deck, "dist"))).includes(OUTSIDE_SECRET),
+    }).toEqual({
+      status: 1,
+      built: false,
+    });
+  });
+
+  it("copies no outside file through a link under public/node_modules, which the open skips", async () => {
+    const deck = createDeck();
+    await writeFile(path.join(workspace, "secret.txt"), OUTSIDE_SECRET);
+    await mkdir(path.join(deck, "public", "node_modules"), { recursive: true });
+    await symlink(
+      path.join(workspace, "secret.txt"),
+      path.join(deck, "public", "node_modules", "secret.txt")
+    );
+    const build = fuseDeck(deck, ["build", "--json"]);
+    expect({
+      status: build.status,
+      built: (await builtText(path.join(deck, "dist"))).includes(OUTSIDE_SECRET),
+      named: oneDocument(build, Tagged).message?.includes(path.join("node_modules", "secret.txt")),
+    }).toEqual({ status: 1, built: false, named: true });
+  });
+
+  it("serves and builds the deck's public files by their root path, from a slide and from CSS", async () => {
+    const deck = createDeck();
+    const logo = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="1"/></svg>';
+    await writeFiles(deck, {
+      "public/logo.svg": logo,
+      "public/notes/agenda.txt": "agenda",
+      "styles/deck.css": ".brand { background: url(/logo.svg); }\n",
+      "slides/cover.mdx": 'import "../styles/deck.css";\n\n# Talk\n\n<img src="/logo.svg" alt="Logo" />\n',
+    });
+    const build = fuseDeck(deck, ["build", "--json"]);
+    expect(build.status, build.stdout + build.stderr).toBe(0);
+    const dist = path.join(deck, "dist");
+    expect({
+      logo: await readFile(path.join(dist, "logo.svg"), "utf8"),
+      agenda: await readFile(path.join(dist, "notes", "agenda.txt"), "utf8"),
+      css: (await builtText(path.join(dist, "assets"))).includes("logo.svg"),
+    }).toEqual({ logo, agenda: "agenda", css: true });
+    const dev = await startDev(deck);
+    try {
+      const response = await fetch(new URL("logo.svg", dev.url));
+      expect({ status: response.status, text: await response.text() }).toEqual({ status: 200, text: logo });
+    } finally {
+      await dev.stop();
+    }
   });
 });

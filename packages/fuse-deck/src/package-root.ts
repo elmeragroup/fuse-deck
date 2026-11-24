@@ -7,6 +7,7 @@
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,4 +58,31 @@ export function shippedSkillPath(): string {
  */
 export function runtimeRoot(): string {
   return path.join(fuseDeckPackageRoot(), "dist", "runtime");
+}
+
+/**
+ * fuse-deck's directory in the user's cache, where the bundler keeps what Vite generates, never in
+ * the deck: `$XDG_CACHE_HOME/fuse-deck` when that is set to an absolute path, or else the
+ * platform's cache directory (`~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows,
+ * `~/.cache` elsewhere).
+ *
+ * @returns The absolute path; it may not exist yet.
+ */
+export function userCacheRoot(): string {
+  const xdg = process.env.XDG_CACHE_HOME;
+  if (xdg !== undefined && path.isAbsolute(xdg)) {
+    return path.join(xdg, "fuse-deck");
+  }
+  switch (process.platform) {
+    case "darwin":
+      return path.join(homedir(), "Library", "Caches", "fuse-deck");
+    case "win32":
+      return path.join(
+        process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"),
+        "fuse-deck",
+        "Cache"
+      );
+    default:
+      return path.join(homedir(), ".cache", "fuse-deck");
+  }
 }

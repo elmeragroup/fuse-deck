@@ -13,7 +13,10 @@ slide; this file does not repeat it.
 1. If the deck has a `BRIEF.md`, read it for what the talk is for.
 2. Plan the slides as ids, then create each one with `fuse-deck slides add <id> --title <text>`,
    passing `--after <id>` to place it and `--layout <name>` for a layout other than `content`.
-3. Write each slide's content in its file. The first heading is the slide's title.
+3. Write each slide's content in its file. The first heading is the slide's title. Style with Fuse
+   and plain `.css` files: Sass, Less, Stylus and CSS Modules do not load. Keep every file a
+   regular file inside the deck; a deck holds no symbolic links, and a command fails with
+   `DeckEntryRefused` on one.
 4. Reorder with `fuse-deck slides move`, and drop a slide with `fuse-deck slides remove`. Leave
    `deck.json`'s `order` to these commands.
 5. Run `fuse-deck check --json` after each round of edits. It compiles every slide and validates

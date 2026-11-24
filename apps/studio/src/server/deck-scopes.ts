@@ -80,6 +80,8 @@ export type DeckScopesConfig = {
   readonly embedderOrigin: string;
   /** The deck runtime's directory, `main.js` and `deck.css`. */
   readonly runtimeRoot: string;
+  /** Where each deck's dev server keeps what Vite generates: the studio's own storage, never the deck. */
+  readonly cacheRoot: string;
   /** How long a closing deck's admitted calls may run before they are cancelled. */
   readonly drainTimeout: Duration.Duration;
 };
@@ -184,7 +186,9 @@ export class DeckScopes extends Context.Service<
           // so a deck reached through a symlink, such as macOS's temporary directory, opens there.
           const realDirectory = yield* fs.realPath(directory);
           const services = yield* Layer.buildWithScope(
-            Bundler.layer(config.runtimeRoot).pipe(Layer.provideMerge(DeckFiles.layerFrom(realDirectory))),
+            Bundler.layer({ runtimeRoot: config.runtimeRoot, cacheRoot: config.cacheRoot }).pipe(
+              Layer.provideMerge(DeckFiles.layerFrom(realDirectory))
+            ),
             scope
           );
           const files = Context.get(services, DeckFiles);
