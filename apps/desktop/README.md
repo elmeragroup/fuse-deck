@@ -23,8 +23,12 @@ studio renderer, and hands the renderer its credential.
   the renderer reconnects with the new run's bearer. Quitting the app stops the backend with
   SIGTERM; the backend finishes within its 15 s stop deadline, and SIGKILL follows only after
   20 s.
-- `FUSE_DECK_STUDIO_DECK`, when set, names a deck the renderer opens at start. Without it the
+- `FUSE_DECK_STUDIO_DECK`, when set, names a deck the renderer opens at start. Main hands it to
+  the first page only, so a reloaded window keeps the deck the backend has open. Without it the
   studio starts empty.
+- While the Source tab holds unsaved edits, a quit or a window close asks the page first. While
+  that question is unanswered, a second quit or close goes on and drops the draft, so a page that
+  never answers cannot hold the app open.
 - The packaged app carries a production npm install of the studio backend, React, React DOM and
   the pinned Fuse in `Contents/Resources/backend`, outside `app.asar`, with its
   `package-lock.json`.
@@ -43,7 +47,7 @@ fixture deck in `test/fixtures/deck` to a temporary directory, and launches it t
 recovers after the test kills the backend with an unsaved draft still in the Source tab, main
 refuses to present another 127.0.0.1 port, Present opens the second slide fullscreen in a window
 without the preload and Escape closes it, closing the window and quitting both ask about the draft
-(Cancel keeps the window and the app, Save on a quit writes the draft), and the app exits 0 after
-its backend exits.
+(Cancel keeps the window and the app, Save on a quit writes the draft), the page makes no call
+main has stopped answering, and the app exits 0 after its backend exits.
 
 Code derived from T3 Code is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

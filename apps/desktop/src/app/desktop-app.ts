@@ -123,12 +123,21 @@ export const program = Effect.fn("desktop.app")(function* (input: DesktopAppInpu
       handler: pickDeck,
     })
   );
+  // The deck to open at start goes to the first page that asks. A reloaded page finds the deck
+  // the backend has open; asking for the start deck again would reopen it, since its path may
+  // differ from the backend's real path, and a reopen ends the deck's agent session.
+  let initialDeck = input.initialDeck;
   yield* ipc.handle(
     DesktopIpc.makeIpcMethod({
       channel: INITIAL_DECK_CHANNEL,
       payload: Schema.Undefined,
       result: PickedDeck,
-      handler: () => Effect.succeed(Option.getOrNull(input.initialDeck)),
+      handler: () =>
+        Effect.sync(() => {
+          const deck = Option.getOrNull(initialDeck);
+          initialDeck = Option.none();
+          return deck;
+        }),
     })
   );
 
