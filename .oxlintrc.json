@@ -184,6 +184,40 @@
       }
     },
     {
+      // Files copied close to verbatim from t3code (apps/desktop/THIRD_PARTY_NOTICES.md lists
+      // them). They keep upstream's file names, interfaces, casts and formatting so they diff
+      // against t3code, so the naming and style rules their upstream shape breaks are off here.
+      // Code written for this repo, beside them, follows every rule.
+      "files": [
+        "apps/desktop/src/boot.ts",
+        "apps/desktop/src/compileCache.ts",
+        "apps/desktop/src/electron/Electron*.ts",
+        "apps/desktop/src/ipc/DesktopIpc.ts",
+        "apps/desktop/src/app/DesktopLifecycle.ts",
+        "apps/desktop/src/app/DesktopShutdown.ts",
+        "apps/desktop/src/app/DesktopState.ts",
+        "apps/desktop/src/app/stdioErrors.ts"
+      ],
+      "rules": {
+        "unicorn/filename-case": "off",
+        "turbo/no-undeclared-env-vars": "off",
+        "typescript/consistent-type-definitions": "off",
+        "typescript/consistent-type-imports": "off",
+        "typescript/no-explicit-any": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unnecessary-condition": "off",
+        "typescript/no-redundant-type-constituents": "off",
+        "typescript/prefer-nullish-coalescing": "off",
+        "typescript/require-await": "off",
+        "anti-slop/no-chained-type-assertions": "off",
+        "anti-slop/no-unknown-parameters": "off",
+        "anti-slop/no-unknown-returns": "off",
+        "anti-slop/no-unsafe-dictionary-type": "off",
+        "anti-slop/no-runtime-typeof": "off",
+        "anti-slop/require-safety-comment-for-type-assertion": "off"
+      }
+    },
+    {
       "files": ["**/*.test.{ts,tsx,mts,mjs}"],
       "rules": {
         "tests/no-class-assertions": "error",

@@ -1,0 +1,14 @@
+{
+  "extends": "@elmeragroup/typescript-config/base.json",
+  "compilerOptions": {
+    // Electron's main process, the preload and the scripts run in Node: no DOM types.
+    "lib": ["ESNext"],
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true
+  },
+  "include": ["src", "scripts", "test", "tsdown.config.ts", "vitest.config.ts"],
+  // The stub page runs in the renderer, under tsconfig.renderer.json.
+  "exclude": ["src/renderer"]
+}

@@ -33,6 +33,13 @@
     },
     "test:packed-consumer": {
       "cache": false
+    },
+    // The desktop shell's packaged app and its smoke test: macOS only, in their own CI job.
+    "package": {
+      "cache": false
+    },
+    "test:packaged": {
+      "cache": false
     }
   }
 }

@@ -31,9 +31,11 @@ the tests together.
 Assert behavior against independently defined expectations. Never compute an expected result with
 the code under test. A test that flakes is made deterministic or deleted in the same change. Put
 each test in the cheapest project that can fail: `unit` for the deck model and the spawned CLI,
-`browser` for a built deck in Chromium, and the packed smoke test for the installed tarball.
+`browser` for a built deck in Chromium, the packed smoke test for the installed tarball, and
+`test:packaged` in `apps/desktop` for the packaged desktop app.
 
 While editing, run `pnpm exec vitest related <files> --run --project unit` in the package. Before
-review, run `pnpm check`; CI adds the browser suite and the packed smoke test.
+review, run `pnpm check`; CI adds the browser suite, the packed smoke test and, on macOS, the
+packaged desktop app's smoke test.
 
 Track open work as GitHub issues, never in a backlog file.

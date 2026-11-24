@@ -1,0 +1,31 @@
+{
+  "name": "@elmeragroup/fuse-deck-studio-desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The fuse-deck studio's Electron shell.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/electron/boot.cjs",
+  "productName": "fuse-deck studio",
+  "scripts": {
+    "build": "rm -rf dist && tsdown",
+    "package": "node scripts/package.ts",
+    "test": "vitest run --project unit",
+    "test:packaged": "node scripts/packaged-smoke.ts",
+    "type-check": "tsrs --noEmit && tsrs --noEmit -p tsconfig.renderer.json"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@elmeragroup/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "effect": "catalog:",
+    "electron": "catalog:",
+    "electron-builder": "catalog:",
+    "playwright": "catalog:",
+    "tsdown": "catalog:",
+    "tsrs": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

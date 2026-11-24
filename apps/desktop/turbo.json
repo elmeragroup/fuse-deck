@@ -1,0 +1,13 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    // The packaged app stages the packed fuse-deck tarball as its backend.
+    "package": {
+      "dependsOn": ["build", "@elmeragroup/fuse-deck#pack"],
+      "passThroughEnv": ["CSC_IDENTITY_AUTO_DISCOVERY"]
+    },
+    "test:packaged": {
+      "dependsOn": ["package"]
+    }
+  }
+}

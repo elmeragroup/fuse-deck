@@ -14,6 +14,7 @@
     "test": "turbo run test",
     "test:browser": "turbo run test:browser",
     "test:packed-consumer": "turbo run test:packed-consumer",
+    "test:packaged": "turbo run test:packaged",
     "type-check": "turbo run type-check"
   },
   "devDependencies": {
