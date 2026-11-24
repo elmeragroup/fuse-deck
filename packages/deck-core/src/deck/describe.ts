@@ -3,29 +3,29 @@
  * The skill ships with the host, so the host passes its path.
  */
 
+import * as Schema from "effect/Schema";
+
 import * as Vocabulary from "./vocabulary.ts";
 
 /** The `DeckVocabulary` document `describe` prints. */
-export type DeckVocabularyDocument = {
-  readonly _tag: "DeckVocabulary";
+export const DeckVocabulary = Schema.TaggedStruct("DeckVocabulary", {
   /** The absolute path of the skill the host ships. */
-  readonly skill: string;
-  readonly layouts: ReadonlyArray<{ readonly name: string; readonly summary: string }>;
-  readonly defaultLayout: Vocabulary.LayoutName;
-  readonly frontmatter: ReadonlyArray<{
-    readonly name: string;
-    readonly type: string;
-    readonly summary: string;
-  }>;
-  readonly components: ReadonlyArray<{
-    readonly name: string;
-    readonly usage: string;
-    readonly summary: string;
-  }>;
-  readonly deck: ReadonlyArray<{ readonly name: string; readonly type: string; readonly summary: string }>;
-  readonly files: ReadonlyArray<{ readonly path: string; readonly summary: string }>;
-  readonly commands: ReadonlyArray<{ readonly usage: string; readonly summary: string }>;
-};
+  skill: Schema.String,
+  layouts: Schema.Array(Schema.Struct({ name: Schema.String, summary: Schema.String })),
+  defaultLayout: Schema.Literals(Vocabulary.LAYOUT_NAMES),
+  frontmatter: Schema.Array(
+    Schema.Struct({ name: Schema.String, type: Schema.String, summary: Schema.String })
+  ),
+  components: Schema.Array(
+    Schema.Struct({ name: Schema.String, usage: Schema.String, summary: Schema.String })
+  ),
+  deck: Schema.Array(Schema.Struct({ name: Schema.String, type: Schema.String, summary: Schema.String })),
+  files: Schema.Array(Schema.Struct({ path: Schema.String, summary: Schema.String })),
+  commands: Schema.Array(Schema.Struct({ usage: Schema.String, summary: Schema.String })),
+});
+
+/** The `DeckVocabulary` document `describe` prints. */
+export type DeckVocabularyDocument = typeof DeckVocabulary.Type;
 
 /**
  * Describe the deck vocabulary.
@@ -34,8 +34,7 @@ export type DeckVocabularyDocument = {
  * @returns The `DeckVocabulary` document.
  */
 export function describeDeck(skill: string): DeckVocabularyDocument {
-  return {
-    _tag: "DeckVocabulary",
+  return DeckVocabulary.make({
     skill,
     layouts: Vocabulary.LAYOUTS.map(({ name, summary }) => ({ name, summary })),
     defaultLayout: Vocabulary.DEFAULT_LAYOUT,
@@ -44,5 +43,5 @@ export function describeDeck(skill: string): DeckVocabularyDocument {
     deck: Vocabulary.DECK_FIELDS.map(({ name, type, summary }) => ({ name, type, summary })),
     files: Vocabulary.FILES.map(({ path, summary }) => ({ path, summary })),
     commands: Vocabulary.VERBS.map(({ usage, summary }) => ({ usage, summary })),
-  };
+  });
 }

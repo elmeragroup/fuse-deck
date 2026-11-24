@@ -6,7 +6,9 @@
  * An edit holds the deck's lock from the read of `deck.json` through its last filesystem change.
  * `add` writes the slide file before `deck.json`, and `remove` writes `deck.json` before it
  * deletes the file, so a crash can leave an orphan file, which `check` reports, but never an id
- * without a file. `deck.json` is written to a temporary file and renamed into place.
+ * without a file. `deck.json` is written to a temporary file and renamed into place. Waiting for
+ * the lock can be interrupted; the two writes cannot, and the second failing undoes the first, so
+ * an interrupted edit, such as an agent's tool call that Stop cancels, applies whole or not at all.
  *
  * A deck holds no symbolic links and no special files: opening one refuses it, and every read and
  * write checks its path again, so a link made later is refused too (see `contained-file.ts`).
@@ -429,7 +431,7 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
           yield* fs.makeDirectory(slidesDir, { recursive: true }).pipe(Effect.mapError(ioFailed(slidesDir)));
           // Create the file through the slides directory's real path, once it is inside the deck.
           const file = path.join(yield* containedSlidesDir, path.basename(slideFile(id)));
-          yield* fs.writeFileString(file, text, { flag: "wx" }).pipe(
+          const created = fs.writeFileString(file, text, { flag: "wx" }).pipe(
             Effect.catchIf(
               (error) => error.reason._tag === "AlreadyExists",
               () =>
@@ -443,7 +445,16 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
             ),
             Effect.mapError((error) => (error._tag === "PlatformError" ? ioFailed(file)(error) : error))
           );
-          yield* writeManifest(next);
+          // The commit: the file, then the order. It runs whole, so Stop cannot leave the file
+          // without its id, and a failed order write takes the new file back out.
+          yield* Effect.uninterruptible(
+            Effect.andThen(
+              created,
+              writeManifest(next).pipe(
+                Effect.onError(() => fs.remove(file, { force: true }).pipe(Effect.ignore))
+              )
+            )
+          );
           return next;
         })
       );
@@ -462,13 +473,24 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
     removeSlide: Effect.fn("DeckFiles.removeSlide")(function* (id) {
       return yield* locked(
         Effect.gen(function* () {
-          const next = yield* Effect.fromResult(DeckManifest.removeSlide(yield* readManifest, id));
+          const previous = yield* readManifest;
+          const next = yield* Effect.fromResult(DeckManifest.removeSlide(previous, id));
           const file = yield* removableSlide(id);
-          yield* writeManifest(next);
-          yield* Option.match(file, {
-            onNone: () => Effect.void,
-            onSome: (entry) => fs.remove(entry, { force: true }).pipe(Effect.mapError(ioFailed(entry))),
-          });
+          // The commit: the order, then the file. It runs whole, so Stop cannot leave the file
+          // behind its removed id, and a failed delete puts the order back.
+          yield* Effect.uninterruptible(
+            Effect.andThen(
+              writeManifest(next),
+              Option.match(file, {
+                onNone: () => Effect.void,
+                onSome: (entry) =>
+                  fs.remove(entry, { force: true }).pipe(
+                    Effect.mapError(ioFailed(entry)),
+                    Effect.onError(() => writeManifest(previous).pipe(Effect.ignore))
+                  ),
+              })
+            )
+          );
           return next;
         })
       );
