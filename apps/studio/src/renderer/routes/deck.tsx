@@ -155,13 +155,18 @@ function DeckWorkspace() {
     };
   }, [toggleChat]);
   const [pendingLeave, setPendingLeave] = useState<PendingLeave | null>(null);
-  /** Run `proceed` now, or after the prompt when it would drop a draft with edits. */
+  /**
+   * Run `proceed` now, or after the prompt when it would drop a draft with edits; `stay` runs
+   * when the user keeps the draft instead.
+   */
   const guarded = useCallback(
-    (proceed: () => void) => {
+    (proceed: () => void, stay?: () => void) => {
       if (unsavedDraft === null) {
         proceed();
       } else {
-        setPendingLeave({ draft: unsavedDraft, proceed });
+        setPendingLeave(
+          stay === undefined ? { draft: unsavedDraft, proceed } : { draft: unsavedDraft, proceed, stay }
+        );
       }
     },
     [unsavedDraft]
@@ -177,12 +182,19 @@ function DeckWorkspace() {
     },
     [client]
   );
+  // Main asks before a quit or a window close. Staying reports the draft again, which tells main
+  // the page answered, so its next quit asks again instead of going on unasked.
   useEffect(
     () =>
       client.onLeaveRequest((intent) => {
-        guarded(() => {
-          client.leave(intent);
-        });
+        guarded(
+          () => {
+            client.leave(intent);
+          },
+          () => {
+            client.reportUnsavedDraft(true);
+          }
+        );
       }),
     [client, guarded]
   );

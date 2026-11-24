@@ -264,6 +264,9 @@ export function startStudioClient(host: StudioHost): StudioClient {
   // The scope whose slides and position the snapshot holds.
   let tracked: ScopeId | null = null;
   let changeSerial = 0;
+  // Set once the page told main to go on with a quit. Main stops answering the page while it
+  // shuts down, so a draft report the save's re-render sends after that would go nowhere.
+  let quitting = false;
 
   // Trace headers would need their own CORS allowance, and the renderer exports no traces.
   const run = <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>) =>
@@ -717,7 +720,9 @@ export function startStudioClient(host: StudioHost): StudioClient {
       );
     },
     reportUnsavedDraft: (unsaved) => {
-      run(host.reportUnsavedDraft(unsaved).pipe(Effect.ignore));
+      if (!quitting) {
+        run(host.reportUnsavedDraft(unsaved).pipe(Effect.ignore));
+      }
     },
     sendPrompt: (scopeId, input) => chatCall((client) => client["agent.prompt"]({ scopeId, input })),
     stopAgent: (scopeId) => chatCall((client) => client["agent.stop"]({ scopeId })),
@@ -742,10 +747,13 @@ export function startStudioClient(host: StudioHost): StudioClient {
     },
     onLeaveRequest: (listener) => host.onLeaveRequest(listener),
     leave: (intent) => {
+      quitting ||= intent === "quit";
       run(
         host.leave(intent).pipe(
           Effect.match({
             onFailure: (error) => {
+              // Main did not go on, so it still answers the page's reports.
+              quitting = false;
               update({ notice: error.message });
             },
             onSuccess: () => undefined,

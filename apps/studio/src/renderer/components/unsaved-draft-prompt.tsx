@@ -11,6 +11,8 @@ export type PendingLeave = {
   readonly draft: UnsavedDraft;
   /** Switch, close or quit, as the user asked. */
   readonly proceed: () => void;
+  /** Called when the leave does not go on: Cancel, or a save that failed. */
+  readonly stay?: () => void;
 };
 
 /**
@@ -45,6 +47,7 @@ export function UnsavedDraftPrompt({
       if (saved) {
         pending.proceed();
       } else {
+        pending.stay?.();
         onSaveFailed();
       }
     });
@@ -56,6 +59,7 @@ export function UnsavedDraftPrompt({
       onOpenChange={(open) => {
         if (!open && !saving) {
           onSettled();
+          pending?.stay?.();
         }
       }}>
       <Dialog.Content size="md" showCloseButton={false}>
