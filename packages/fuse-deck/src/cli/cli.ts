@@ -4,6 +4,8 @@
  * failure exits 1.
  */
 
+import * as McpProtocol from "effect/ai/McpProtocol";
+import * as McpServer from "effect/ai/McpServer";
 import * as Cause from "effect/Cause";
 import * as Argument from "effect/cli/Argument";
 import * as CliConfig from "effect/cli/CliConfig";
@@ -15,23 +17,25 @@ import * as GlobalFlag from "effect/cli/GlobalFlag";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Result from "effect/Result";
 import * as Runtime from "effect/Runtime";
 import * as Schema from "effect/Schema";
 
 import { DEFAULT_OUT } from "@elmeragroup/deck-core/bundler/build-output";
 import { Bundler } from "@elmeragroup/deck-core/bundler/bundler";
-import { compileSlide } from "@elmeragroup/deck-core/bundler/mdx";
-import { checkDeck } from "@elmeragroup/deck-core/deck/check";
 import { DeckFiles } from "@elmeragroup/deck-core/deck/deck-files";
-import type { DeckManifest, OrderPosition } from "@elmeragroup/deck-core/deck/deck-manifest";
+import {
+  addSlide,
+  checkDeckDocument,
+  listSlides,
+  moveSlide,
+  removeSlide,
+} from "@elmeragroup/deck-core/deck/deck-operations";
 import { describeDeck } from "@elmeragroup/deck-core/deck/describe";
 import type { DeckVocabularyDocument } from "@elmeragroup/deck-core/deck/describe";
-import { mdxText } from "@elmeragroup/deck-core/deck/mdx-text";
 import { DEFAULT_THEME, scaffoldDeck } from "@elmeragroup/deck-core/deck/scaffold";
-import { SlideId, slidePath } from "@elmeragroup/deck-core/deck/slide-id";
+import { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
 import * as Vocabulary from "@elmeragroup/deck-core/deck/vocabulary";
-import type { LayoutName } from "@elmeragroup/deck-core/deck/vocabulary";
+import { deckToolsForDeck } from "@elmeragroup/deck-core/tools/deck-tools";
 
 import packageJson from "../../package.json" with { type: "json" };
 import { runtimeRoot, shippedSkillPath, userCacheRoot } from "../package-root.ts";
@@ -115,31 +119,13 @@ const list = Command.make(
   "list",
   {},
   Effect.fn("cli.slides.list")(function* () {
-    const deck = yield* DeckFiles;
-    const loaded = yield* deck.load;
-    const slides: Array<{ id: SlideId; path: string; title: string | null; layout: LayoutName | null }> = [];
-    for (const { id, file } of loaded.slides) {
-      const source = loaded.dangling.includes(id)
-        ? Option.none()
-        : Option.map(
-            Result.getSuccess(
-              yield* Effect.result(compileSlide(id, file, yield* deck.readSlide(id), "production"))
-            ),
-            (slide) => slide.metadata
-          );
-      slides.push({
-        id,
-        path: slidePath(id),
-        title: Option.getOrNull(Option.flatMap(source, (each) => each.title)),
-        layout: Option.getOrNull(Option.map(source, (each) => each.layout)),
-      });
-    }
+    const document = yield* listSlides();
     yield* reply({
-      document: { _tag: "SlideList", slides },
+      document,
       text:
-        slides.length === 0
+        document.slides.length === 0
           ? "The deck has no slides."
-          : slides
+          : document.slides
               .map(
                 (slide, index) =>
                   `${String(index + 1)}. ${slide.id}  ${slide.title ?? "(no title)"}  [${slide.layout ?? "unreadable"}]`
@@ -178,17 +164,9 @@ const add = Command.make(
       Flag.optional
     ),
   },
-  Effect.fn("cli.slides.add")(function* ({ id, after, layout, title }) {
-    const deck = yield* DeckFiles;
-    const position: OrderPosition = Option.match(after, {
-      onNone: () => ({ _tag: "End" }),
-      onSome: (anchor) => ({ _tag: "After", anchor }),
-    });
-    const manifest = yield* deck.addSlide(id, position, newSlide(id, layout, title));
-    yield* reply({
-      document: { _tag: "SlideAdded", id, path: slidePath(id), order: manifest.order },
-      text: `Added ${slidePath(id)}.\n${orderText(manifest)}`,
-    });
+  Effect.fn("cli.slides.add")(function* (slide) {
+    const document = yield* addSlide(slide);
+    yield* reply({ document, text: `Added ${document.path}.\n${orderText(document.order)}` });
   })
 ).pipe(Command.withDescription("Create slides/<id>.mdx and add it to the order"), Command.provide(deckLayer));
 
@@ -200,7 +178,6 @@ const move = Command.make(
     before: anchorFlag("before", "Move it before this slide."),
   },
   Effect.fn("cli.slides.move")(function* ({ id, after, before }) {
-    const deck = yield* DeckFiles;
     const position = Option.getOrThrowWith(
       Option.orElse(
         Option.map(after, (anchor) => ({ _tag: "After", anchor }) as const),
@@ -208,11 +185,8 @@ const move = Command.make(
       ),
       () => new Error("The move validation lets only one anchor through.")
     );
-    const manifest = yield* deck.moveSlide(id, position);
-    yield* reply({
-      document: { _tag: "SlideMoved", id, order: manifest.order },
-      text: `Moved ${id}.\n${orderText(manifest)}`,
-    });
+    const document = yield* moveSlide(id, position);
+    yield* reply({ document, text: `Moved ${id}.\n${orderText(document.order)}` });
   })
 ).pipe(
   Command.validate(({ after, before }) =>
@@ -228,11 +202,10 @@ const remove = Command.make(
   "remove",
   { id: slideIdArgument.pipe(Argument.withDescription("The slide to remove.")) },
   Effect.fn("cli.slides.remove")(function* ({ id }) {
-    const deck = yield* DeckFiles;
-    const manifest = yield* deck.removeSlide(id);
+    const document = yield* removeSlide(id);
     yield* reply({
-      document: { _tag: "SlideRemoved", id, path: slidePath(id), order: manifest.order },
-      text: `Removed ${id} and deleted ${slidePath(id)}.\n${orderText(manifest)}`,
+      document,
+      text: `Removed ${id} and deleted ${document.path}.\n${orderText(document.order)}`,
     });
   })
 ).pipe(
@@ -251,10 +224,10 @@ const check = Command.make(
   "check",
   {},
   Effect.fn("cli.check")(function* () {
-    const report = yield* checkDeck();
+    const document = yield* checkDeckDocument();
     yield* reply({
-      document: { _tag: "DeckChecked", slides: report.slides, steps: report.steps, theme: report.theme },
-      text: `The deck's ${String(report.slides)} slides compile, with ${String(report.steps)} steps in all. Theme: ${report.theme}.`,
+      document,
+      text: `The deck's ${String(document.slides)} slides compile, with ${String(document.steps)} steps in all. Theme: ${document.theme}.`,
     });
   })
 ).pipe(
@@ -307,29 +280,50 @@ const build = Command.make(
   })
 ).pipe(Command.withDescription("Build the deck into static files"), Command.provide(bundlerLayer));
 
+/**
+ * The MCP revisions `mcp` serves, newest first. A client that offers another revision gets the
+ * first one, as the MCP handshake allows.
+ */
+const MCP_PROTOCOLS = [
+  McpProtocol.v2025_11_25,
+  McpProtocol.v2025_06_18,
+  McpProtocol.v2025_03_26,
+  McpProtocol.v2024_11_05,
+] as const;
+
+const mcp = Command.make(
+  "mcp",
+  {},
+  Effect.fn("cli.mcp")(function* () {
+    // Stdout carries only MCP messages from here on: the server owns it until stdin ends.
+    return yield* Layer.launch(
+      McpServer.layerStdio({
+        name: "fuse-deck",
+        version: packageJson.version,
+        instructions:
+          "These tools edit the fuse-deck deck in the directory the server started in. Call describe first, then slides_add for each slide and write its content in slides/<id>.mdx. Run check after each round of edits.",
+        protocols: MCP_PROTOCOLS,
+        registrations: deckToolsForDeck(shippedSkillPath()),
+      })
+    );
+  })
+).pipe(
+  Command.withDescription(
+    "Serve describe, slides list, add, move and remove, and check as MCP tools over stdio, for the deck in the working directory, until stdin ends"
+  ),
+  Command.provide(bundlerLayer)
+);
+
 const cli = Command.make("fuse-deck").pipe(
   Command.withDescription(
     "Build Fuse-themed slide decks from MDX. Agents start with `fuse-deck describe --json`."
   ),
   Command.withGlobalFlags([Json]),
-  Command.withSubcommands([create, describe, slides, check, dev, build])
+  Command.withSubcommands([create, describe, slides, check, dev, build, mcp])
 );
 
-/** A slide's starting text. */
-function newSlide(id: SlideId, layout: Option.Option<LayoutName>, title: Option.Option<string>): string {
-  const heading = Option.getOrElse(title, () => {
-    const words = id.split("-").join(" ");
-    return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
-  });
-  const frontmatter = Option.match(layout, {
-    onNone: () => "",
-    onSome: (name) => `---\nlayout: ${name}\n---\n\n`,
-  });
-  return `${frontmatter}# ${mdxText(heading)}\n`;
-}
-
-function orderText(manifest: DeckManifest): string {
-  return `Order: ${manifest.order.join(", ")}`;
+function orderText(order: readonly SlideId[]): string {
+  return `Order: ${order.join(", ")}`;
 }
 
 function describeText(document: DeckVocabularyDocument): string {

@@ -1,6 +1,8 @@
 import { NodeServices } from "@effect/platform-node";
 import { assert, describe, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -549,6 +551,217 @@ describe("A deck holds no symbolic links", () => {
           order: yield* orderOnDisk(deck.root),
         },
         { outcome: "LockFailed", order: ["cover"] }
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+});
+
+describe("An interrupted edit", () => {
+  /**
+   * The real file system, except that the first call `matches` picks waits for `release` once it
+   * has signalled `reached`, as a slow disk would hold it at that point.
+   */
+  const latched = (
+    matches: (method: "rename" | "remove", target: string) => boolean,
+    reached: Deferred.Deferred<void>,
+    release: Deferred.Deferred<void>
+  ) =>
+    Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (real) => {
+        let held = false;
+        const hold = <A, E>(method: "rename" | "remove", target: string, call: Effect.Effect<A, E>) => {
+          if (held || !matches(method, target)) {
+            return call;
+          }
+          held = true;
+          return Deferred.succeed(reached, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.andThen(call)
+          );
+        };
+        return FileSystem.make({
+          ...real,
+          rename: (from, to) => hold("rename", to, real.rename(from, to)),
+          remove: (target, options) => hold("remove", target, real.remove(target, options)),
+        });
+      })
+    ).pipe(Layer.provide(NodeServices.layer));
+
+  /** A deck with `cover` and `a`, opened through the latched file system. */
+  const latchedDeck = Effect.fnUntraced(function* (
+    matches: (method: "rename" | "remove", target: string) => boolean
+  ) {
+    const reached = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const created = yield* deckWith(["a"]);
+    const deck = yield* Effect.service(DeckFiles).pipe(
+      Effect.provide(
+        DeckFiles.layerFrom(created.root).pipe(Layer.provide(latched(matches, reached, release)))
+      )
+    );
+    return { deck, reached, release };
+  });
+
+  /** The order on disk and the slide files, as the test compares them. */
+  const onDisk = (root: string) =>
+    Effect.all({ order: orderOnDisk(root), files: slideFiles(root) }, { concurrency: 1 });
+
+  it.effect.each([
+    {
+      name: "an add interrupted after its file, before deck.json",
+      matches: (method: string, target: string) => method === "rename" && target.endsWith("deck.json"),
+      edit: (deck: DeckFiles["Service"]) => deck.addSlide(id("b"), { _tag: "End" }, "# b\n"),
+      // Oracle: the add as a whole, or nothing of it.
+      allowed: [
+        { order: ["cover", "a", "b"], files: ["a.mdx", "b.mdx", "cover.mdx"] },
+        { order: ["cover", "a"], files: ["a.mdx", "cover.mdx"] },
+      ],
+    },
+    {
+      name: "a remove interrupted after deck.json, before the file goes",
+      matches: (method: string, target: string) => method === "remove" && target.endsWith("a.mdx"),
+      edit: (deck: DeckFiles["Service"]) => deck.removeSlide(id("a")),
+      allowed: [
+        { order: ["cover"], files: ["cover.mdx"] },
+        { order: ["cover", "a"], files: ["a.mdx", "cover.mdx"] },
+      ],
+    },
+  ])("leaves no half of $name", ({ matches, edit, allowed }) =>
+    Effect.gen(function* () {
+      const { deck, reached, release } = yield* latchedDeck(matches);
+      const fiber = yield* Effect.forkChild(edit(deck));
+      yield* Deferred.await(reached);
+      const interrupting = yield* Effect.forkChild(Fiber.interrupt(fiber));
+      yield* Effect.yieldNow;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(interrupting);
+      const state = yield* onDisk(deck.root);
+      assert.isTrue(
+        allowed.some(
+          (each) =>
+            each.order.join(",") === state.order.join(",") && each.files.join(",") === state.files.join(",")
+        ),
+        `order ${state.order.join(",")}; files ${state.files.join(",")}`
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+
+  /** The real file system, except that removing a path ending in `failing` fails, as a busy file does. */
+  const failingRemoveOf = (failing: string) =>
+    Layer.effect(
+      FileSystem.FileSystem,
+      Effect.map(FileSystem.FileSystem, (real) =>
+        FileSystem.make({
+          ...real,
+          remove: (target, options) =>
+            target.endsWith(failing)
+              ? Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "PermissionDenied",
+                    module: "FileSystem",
+                    method: "remove",
+                    pathOrDescriptor: target,
+                  })
+                )
+              : real.remove(target, options),
+        })
+      )
+    ).pipe(Layer.provide(NodeServices.layer));
+
+  it.effect("takes the new file back out when deck.json cannot be written, so a retry succeeds", () =>
+    Effect.gen(function* () {
+      const created = yield* deckWith(["a"]);
+      // deck.json is written to a temporary file first, `deck.json.<uuid>.tmp`; that write fails.
+      const failingManifest = Layer.effect(
+        FileSystem.FileSystem,
+        Effect.map(FileSystem.FileSystem, (real) =>
+          FileSystem.make({
+            ...real,
+            writeFile: (target, data, options) =>
+              path.basename(target).startsWith("deck.json.")
+                ? Effect.fail(
+                    PlatformError.systemError({
+                      _tag: "Unknown",
+                      module: "FileSystem",
+                      method: "writeFile",
+                      description: "no space left on device",
+                      pathOrDescriptor: target,
+                    })
+                  )
+                : real.writeFile(target, data, options),
+          })
+        )
+      ).pipe(Layer.provide(NodeServices.layer));
+      const failing = yield* Effect.service(DeckFiles).pipe(
+        Effect.provide(DeckFiles.layerFrom(created.root).pipe(Layer.provide(failingManifest)))
+      );
+      const result = yield* Effect.result(failing.addSlide(id("b"), { _tag: "End" }, "# b\n"));
+      const after = yield* onDisk(created.root);
+      const retried = yield* created
+        .addSlide(id("b"), { _tag: "End" }, "# b\n")
+        .pipe(Effect.map((manifest): string[] => [...manifest.order]));
+      assert.deepStrictEqual(
+        { outcome: Result.isFailure(result) ? result.failure._tag : "succeeded", after, retried },
+        {
+          outcome: "DeckIoFailed",
+          after: { order: ["cover", "a"], files: ["a.mdx", "cover.mdx"] },
+          retried: ["cover", "a", "b"],
+        }
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+
+  it.effect("puts the order back when the slide's file cannot be deleted", () =>
+    Effect.gen(function* () {
+      const created = yield* deckWith(["a"]);
+      const failing = yield* Effect.service(DeckFiles).pipe(
+        Effect.provide(DeckFiles.layerFrom(created.root).pipe(Layer.provide(failingRemoveOf("a.mdx"))))
+      );
+      const result = yield* Effect.result(failing.removeSlide(id("a")));
+      assert.deepStrictEqual(
+        {
+          outcome: Result.isFailure(result) ? result.failure._tag : "succeeded",
+          after: yield* onDisk(created.root),
+        },
+        { outcome: "DeckIoFailed", after: { order: ["cover", "a"], files: ["a.mdx", "cover.mdx"] } }
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+  );
+
+  it.live("stops waiting for the lock when interrupted, and a retry with the same id then succeeds", () =>
+    Effect.gen(function* () {
+      const created = yield* deckWith([]);
+      const lock = path.join(created.root, ".fuse-deck.lock");
+      // A live holder: this process, under another edit's token.
+      yield* Effect.promise(() => writeFile(lock, `{"pid":${String(process.pid)},"token":"another-edit"}`));
+      // The edit has found the live holder once it reads the lock's record.
+      const waiting = yield* Deferred.make<void>();
+      const watching = Layer.effect(
+        FileSystem.FileSystem,
+        Effect.map(FileSystem.FileSystem, (real) =>
+          FileSystem.make({
+            ...real,
+            readFile: (file) =>
+              file === lock
+                ? Effect.andThen(Deferred.succeed(waiting, undefined), real.readFile(file))
+                : real.readFile(file),
+          })
+        )
+      ).pipe(Layer.provide(NodeServices.layer));
+      const deck = yield* Effect.service(DeckFiles).pipe(
+        Effect.provide(DeckFiles.layerFrom(created.root).pipe(Layer.provide(watching)))
+      );
+      const fiber = yield* Effect.forkChild(deck.addSlide(id("b"), { _tag: "End" }, "# b\n"));
+      yield* Deferred.await(waiting);
+      const interrupted = yield* Fiber.interrupt(fiber).pipe(Effect.timeoutOption("1 second"));
+      yield* Effect.promise(() => rm(lock));
+      const retried = yield* deck
+        .addSlide(id("b"), { _tag: "End" }, "# b\n")
+        .pipe(Effect.map((manifest): string[] => [...manifest.order]));
+      assert.deepStrictEqual(
+        { stopped: Option.isSome(interrupted), retried },
+        { stopped: true, retried: ["cover", "b"] }
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );

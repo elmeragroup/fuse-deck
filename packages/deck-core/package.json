@@ -14,6 +14,7 @@
     "./deck/contained-file": "./src/deck/contained-file.ts",
     "./deck/deck-files": "./src/deck/deck-files.ts",
     "./deck/deck-manifest": "./src/deck/deck-manifest.ts",
+    "./deck/deck-operations": "./src/deck/deck-operations.ts",
     "./deck/describe": "./src/deck/describe.ts",
     "./deck/line-ending": "./src/deck/line-ending.ts",
     "./deck/mdx-text": "./src/deck/mdx-text.ts",
@@ -22,6 +23,7 @@
     "./deck/slide-edit": "./src/deck/slide-edit.ts",
     "./deck/slide-id": "./src/deck/slide-id.ts",
     "./deck/vocabulary": "./src/deck/vocabulary.ts",
+    "./tools/deck-tools": "./src/tools/deck-tools.ts",
     "./package.json": "./package.json"
   },
   "scripts": {

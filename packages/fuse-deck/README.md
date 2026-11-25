@@ -17,6 +17,7 @@ fuse-deck slides add intro --title "Why Fuse"
 fuse-deck check             # compiles every slide and validates the theme against Fuse
 fuse-deck dev               # serves the deck with live reload
 fuse-deck build             # writes the static deck to dist/
+fuse-deck mcp               # serves the deck commands as MCP tools over stdio
 ```
 
 A slide change is a React view transition: the old slide blurs out and the new one blurs in.
@@ -33,6 +34,12 @@ From this checkout, `pnpm exec node packages/fuse-deck/src/bin.ts <command>` run
 source through Node's type stripping. It serves the built runtime in `dist/runtime`, so run
 `pnpm build` first.
 `skill/SKILL.md` ships in the package for agents, and `describe` prints its path.
+
+`fuse-deck mcp` serves `describe`, `slides_list`, `slides_add`, `slides_move`, `slides_remove` and
+`check` as MCP tools over stdio, for the deck in its working directory, until stdin ends. The tools
+and the commands share their operations in deck-core's `deck-operations` and `tools/deck-tools`,
+so a tool returns the same document as its command's `--json`. The skill shows how to register
+the server with an agent.
 
 The package exports no modules (`"exports": {}`). The bin and Vite reach `dist/` by file path, so a
 deep import such as `@elmeragroup/fuse-deck/dist/runtime/main.js` fails.

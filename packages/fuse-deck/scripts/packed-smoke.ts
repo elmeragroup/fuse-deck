@@ -2,7 +2,8 @@
  * The packed smoke test: fuse-deck's portability gate. It installs the packed fuse-deck and the
  * published Fuse release the workspace pins with npm in a directory outside the workspace, creates a deck in another directory
  * outside that install, gives a slide a Fuse component, and runs `create`, `describe`, `slides add`,
- * `check --json` and `build` through the `fuse-deck` command npm installed. It checks that the
+ * `check --json` and `build` through the `fuse-deck` command npm installed. It starts `mcp` in the
+ * deck, lists its tools over stdio and checks that it exits 0 when stdin ends. It checks that the
  * skill `describe` names exists, and that the package refuses a deep import. It then runs the built
  * page's classic bootstrap and checks the theme it applies before the module entry runs. Last, it
  * serves the deck with `dev`, renders both slides in Chromium, and stops the server with SIGINT. A
@@ -214,6 +215,7 @@ const smoke = Effect.gen(function* () {
   yield* fs.writeFileString(path.join(deck, "slides", "intro.mdx"), INTRO);
   yield* expectDocument(yield* fuseDeck(["check", "--json"], deck), "DeckChecked");
   yield* expectDocument(yield* fuseDeck(["build", "--json"], deck), "DeckBuilt");
+  yield* listMcpTools(bin, deck);
 
   const html = yield* fs.readFileString(path.join(deck, "dist", "index.html"));
   const root = /<html\b[^>]*>/.exec(html)?.[0] ?? "";
@@ -252,9 +254,105 @@ const smoke = Effect.gen(function* () {
   }
   yield* serveAndRender(bin, deck);
   yield* Console.log(
-    "Packed smoke passed: create, describe, slides add, check, build and dev ran through the installed fuse-deck command, describe named the installed skill, a deep import failed, the bootstrap applied each scheme, the dev server rendered both slides in Chromium, and a second dev server recovered from a broken first load."
+    "Packed smoke passed: create, describe, slides add, check, build, mcp and dev ran through the installed fuse-deck command, describe named the installed skill, a deep import failed, the bootstrap applied each scheme, the dev server rendered both slides in Chromium, and a second dev server recovered from a broken first load."
   );
 }).pipe(Effect.scoped);
+
+/** One JSON-RPC response `mcp` writes: every stdout line must be one, answering the request sent. */
+const McpResponse = Schema.fromJsonString(
+  Schema.Struct({ jsonrpc: Schema.Literal("2.0"), id: Schema.Finite, result: Schema.Unknown })
+);
+
+const McpToolList = Schema.Struct({ tools: Schema.Array(Schema.Struct({ name: Schema.String })) });
+
+/** The six deck tools `mcp` serves. */
+const DECK_TOOLS = ["check", "describe", "slides_add", "slides_list", "slides_move", "slides_remove"];
+
+/**
+ * Start the installed `mcp` in the deck and send it an initialize and a tool list on stdin, which
+ * then ends. The server answers what it read before it exits, so stdout must hold exactly the two
+ * answers, and the process must exit 0.
+ */
+const listMcpTools = Effect.fn("listMcpTools")(
+  function* (bin: string, deck: string) {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const requests = [
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-11-25",
+          capabilities: {},
+          clientInfo: { name: "packed-smoke", version: "1.0.0" },
+        },
+      },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+    ];
+    const input = (yield* Effect.forEach(requests, (request) => encodeJson(request), { concurrency: 1 })).map(
+      (line) => `${line}\n`
+    );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const server = yield* spawner.spawn(
+          ChildProcess.make(bin, ["mcp"], {
+            cwd: deck,
+            stdin: Stream.make(new TextEncoder().encode(input.join(""))),
+            forceKillAfter: Duration.seconds(2),
+          })
+        );
+        yield* Console.log(`$ fuse-deck mcp  (in ${deck}, pid ${String(server.pid)})`);
+        const [stdout, stderr, exitCode] = yield* Effect.all(
+          [text(server.stdout), text(server.stderr), server.exitCode],
+          { concurrency: "unbounded" }
+        ).pipe(
+          Effect.timeout("60 seconds"),
+          Effect.mapError((error) =>
+            error._tag === "TimeoutError"
+              ? new SmokeFailed({ message: "mcp did not exit within 60 s of stdin ending." })
+              : error
+          )
+        );
+        yield* Console.log(
+          `${stdout}${stderr === "" ? "" : `[stderr]\n${stderr}`}[exit ${String(exitCode)}]`
+        );
+        const lines = stdout.split("\n").filter((line) => line !== "");
+        const responses = yield* Effect.forEach(
+          lines,
+          (line) =>
+            Schema.decodeEffect(McpResponse)(line).pipe(
+              Effect.mapError(
+                () => new SmokeFailed({ message: `mcp wrote something other than a response: ${line}` })
+              )
+            ),
+          { concurrency: 1 }
+        );
+        const [initialized, listed] = responses;
+        if (responses.length !== 2 || initialized?.id !== 1 || listed?.id !== 2) {
+          return yield* new SmokeFailed({
+            message: `mcp wrote ${String(lines.length)} lines, not the two answers.`,
+          });
+        }
+        const { tools } = yield* Schema.decodeUnknownEffect(McpToolList)(listed.result);
+        const names = tools.map((tool) => tool.name).toSorted();
+        if (names.join(",") !== DECK_TOOLS.join(",")) {
+          return yield* new SmokeFailed({
+            message: `mcp listed ${names.join(", ")}, not ${DECK_TOOLS.join(", ")}.`,
+          });
+        }
+        if (exitCode !== 0) {
+          return yield* new SmokeFailed({
+            message: `mcp exited ${String(exitCode)} when stdin ended, not 0.`,
+          });
+        }
+      })
+    );
+  },
+  Effect.mapError((error) =>
+    error._tag === "SmokeFailed" ? error : new SmokeFailed({ message: `mcp: ${error.message}` })
+  )
+);
 
 /** `dev --json`'s readiness document. */
 const DevServerReady = Schema.fromJsonString(Schema.TaggedStruct("DevServerReady", { url: Schema.String }));

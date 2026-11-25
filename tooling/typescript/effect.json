@@ -19,8 +19,10 @@
         "effectFn": ["span", "untraced"],
         // The unstable modules fuse-deck builds on: the CLI, HTTP, child-process, file-system and
         // terminal services, the platform layers that provide them, the test kit, Stream's byte limit,
-        // the studio's RPC over WebSocket, and the error reporters effect-acp's RPC handlers read.
+        // the studio's RPC over WebSocket, the error reporters effect-acp's RPC handlers read, and the
+        // MCP server and tools the deck tools are served with.
         "allowedUnstableApis": [
+          "effect/ai",
           "effect/cli",
           "effect/http",
           "effect/process",

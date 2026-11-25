@@ -74,7 +74,7 @@ const HELD_RETRIES = 200;
 
 /**
  * Hold `file` as an exclusive lock until the scope closes. A stale lock is taken over; a live
- * holder is waited for, up to about five seconds.
+ * holder is waited for, up to about five seconds, and the wait ends early when interrupted.
  *
  * @param file - The lock file.
  * @returns An effect that holds the lock for its scope.
@@ -82,16 +82,15 @@ const HELD_RETRIES = 200;
 export function holdLock(
   file: string
 ): Effect.Effect<void, LockHeld | LockNeedsRecovery | LockFailed, FileSystem.FileSystem | Scope.Scope> {
+  // Each attempt takes the lock and registers its release as one step; the waits between attempts
+  // can be interrupted, so a cancelled edit stops waiting at once.
   return Effect.asVoid(
-    Effect.acquireRelease(
-      lock(file).pipe(
-        Effect.retry({
-          schedule: HELD_RETRY,
-          times: HELD_RETRIES,
-          while: (error) => error._tag === "LockHeld",
-        })
-      ),
-      unlock
+    Effect.acquireRelease(lock(file), unlock).pipe(
+      Effect.retry({
+        schedule: HELD_RETRY,
+        times: HELD_RETRIES,
+        while: (error) => error._tag === "LockHeld",
+      })
     )
   );
 }
