@@ -147,5 +147,26 @@
     "effecttsgo/unnecessary-typeof-type": "error",
     "effecttsgo/unsafe-effect-type-assertion": "error",
     "effecttsgo/unstable-api-usage": "error"
-  }
+  },
+  "overrides": [
+    {
+      // The files copied close to verbatim from t3code, as in .oxlintrc.json's override. These
+      // style rules would rewrite upstream's code; the correctness rules still hold.
+      "files": [
+        "apps/desktop/src/boot.ts",
+        "apps/desktop/src/compileCache.ts",
+        "apps/desktop/src/electron/Electron*.ts",
+        "apps/desktop/src/ipc/DesktopIpc.ts",
+        "apps/desktop/src/app/DesktopLifecycle.ts",
+        "apps/desktop/src/app/DesktopShutdown.ts",
+        "apps/desktop/src/app/DesktopState.ts",
+        "apps/desktop/src/app/stdioErrors.ts"
+      ],
+      "rules": {
+        "effecttsgo/lazy-effect": "off",
+        "effecttsgo/missing-concurrency-option": "off",
+        "effecttsgo/schema-number": "off"
+      }
+    }
+  ]
 }

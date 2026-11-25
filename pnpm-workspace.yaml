@@ -52,6 +52,10 @@ catalog:
   "@types/react": 19.3.0
   "@types/react-dom": 19.3.0
 
+  # The studio's desktop shell, at the releases t3code's apps/desktop runs (t3code 2fe7febc).
+  electron: 44.10.1
+  electron-builder: 26.16.1
+
 autoInstallPeers: true
 
 overrides:
@@ -61,6 +65,8 @@ overrides:
 
 allowBuilds:
   "@parcel/watcher": true
+  # electron-builder's Windows installer; its script builds for Windows, and the studio packages macOS only.
+  electron-winstaller: false
 
 minimumReleaseAge: 4320
 

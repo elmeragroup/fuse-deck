@@ -152,6 +152,9 @@ export class Bundler extends Context.Service<
           react({ include: /\.(?:mdx|[jt]sx?)$/ }),
         ],
         server: {
+          // Loopback only, on IPv4 by its literal address: the deck is a local preview, and the
+          // studio frames it under a `frame-src http://127.0.0.1:*` policy.
+          host: "127.0.0.1",
           fs: { allow: [deck.root, packageRoot, ...dependencies.map(({ root }) => root)] },
           // A deck holds a few dozen files, so polling them costs little, and an edit reaches the
           // page within 100 ms. On a busy Mac, FSEvents delivered slide edits 10 s late or not

@@ -185,7 +185,7 @@ describe("fuse-deck --json", () => {
     expect(oneDocument(fuseDeck(deck, ["check", "--json"]), Tagged)._tag).toBe("DeckChecked");
   });
 
-  it("dev prints one readiness document once the server listens, and stops serving on SIGINT", async () => {
+  it("dev prints one readiness document once the server listens on 127.0.0.1, and stops serving on SIGINT", async () => {
     const deck = createDeck();
     const child = spawn(process.execPath, [BIN, "dev", "--json"], {
       cwd: deck,
@@ -211,6 +211,7 @@ describe("fuse-deck --json", () => {
       const ready = Schema.decodeSync(
         Schema.fromJsonString(Schema.TaggedStruct("DevServerReady", { url: Schema.String }))
       )(await firstLine);
+      expect(new URL(ready.url).hostname).toBe("127.0.0.1");
       const page = await fetch(ready.url);
       expect(page.status).toBe(200);
       expect(await page.text()).toContain('data-theme-brand="elma"');

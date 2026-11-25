@@ -293,7 +293,7 @@ const dev = Command.make(
     return yield* Effect.never;
   }, Effect.scoped)
 ).pipe(
-  Command.withDescription("Serve the deck with live reload until interrupted"),
+  Command.withDescription("Serve the deck on 127.0.0.1 with live reload until interrupted"),
   Command.provide(bundlerLayer)
 );
 
