@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -406,6 +406,12 @@ describe("a built deck with video and blank slides", () => {
     fuseDeck(deck, ["slides", "add", "demo", "--layout", "center"]);
     fuseDeck(deck, ["slides", "add", "raw", "--layout", "blank"]);
     fuseDeck(deck, ["slides", "add", "chart"]);
+    const deckJson = path.join(deck, "deck.json");
+    const rawManifest = await readFile(deckJson, "utf8");
+    await writeFile(
+      deckJson,
+      rawManifest.replace('"aspect": "16:9",', '"aspect": "16:9",\n  "locale": "nb-NO",')
+    );
     await writeFile(
       path.join(deck, "slides", "demo.mdx"),
       '---\nlayout: center\n---\n\nimport clip from "../assets/clip.mp4";\n\n<Video src={clip} title="Product demo" muted />\n'
@@ -533,6 +539,7 @@ describe("a built deck with video and blank slides", () => {
     const slide = page.locator("[aria-roledescription=slide]");
     await slide.waitFor();
 
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe("nb-NO");
     expect(await slide.locator("[data-ratio='2:3'][data-align='center']").count()).toBe(1);
     const figure = page.getByRole("figure", { name: "Weekly velocity" });
     await figure.waitFor();

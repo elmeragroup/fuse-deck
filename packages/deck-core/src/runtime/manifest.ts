@@ -5,6 +5,8 @@
 
 import type { ComponentType } from "react";
 
+import type { SupportedLocale } from "@elmeragroup/fuse/theme";
+
 import type { LayoutName } from "../deck/vocabulary.ts";
 
 /** The components MDX looks up for JSX names a slide did not import. */
@@ -31,6 +33,7 @@ export type ManifestEmbedder = {
 export type DeckManifest = {
   readonly title: string;
   readonly aspect: "16:9" | "4:3";
+  readonly locale: SupportedLocale;
   /** The studio page that frames the deck, or null when no studio served it. */
   readonly embedder: ManifestEmbedder | null;
   readonly slides: readonly ManifestSlide[];

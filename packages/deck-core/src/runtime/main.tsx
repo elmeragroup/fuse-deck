@@ -23,7 +23,7 @@ if (container === null) {
 
 createRoot(container).render(
   <StrictMode>
-    <LocaleProvider locale="en-US">
+    <LocaleProvider locale={manifest.locale}>
       <Deck deck={{ title: manifest.title, aspect: manifest.aspect, embedder: manifest.embedder, slides }} />
     </LocaleProvider>
   </StrictMode>

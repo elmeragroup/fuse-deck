@@ -100,6 +100,11 @@ export const DECK_FIELDS = [
   { name: "density", type: "string", summary: "dense or comfortable, Fuse's document density." },
   { name: "aspect", type: "string", summary: "The slide canvas, 16:9 (1920×1080) or 4:3 (1440×1080)." },
   {
+    name: "locale",
+    type: "string",
+    summary: "Optional Fuse locale, en-US, nb-NO, sv-SE or fi-FI. Defaults to en-US.",
+  },
+  {
     name: "order",
     type: "string[]",
     summary: "The slide ids in presentation order. Edit it through `fuse-deck slides`, never by hand.",

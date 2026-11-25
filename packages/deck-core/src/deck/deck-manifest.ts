@@ -17,6 +17,15 @@ export const ASPECTS = ["16:9", "4:3"] as const;
 /** A slide canvas proportion. */
 export type Aspect = (typeof ASPECTS)[number];
 
+/** The locales Fuse translates, usable as a deck's optional `locale` setting. */
+export const LOCALES = ["en-US", "nb-NO", "sv-SE", "fi-FI"] as const;
+
+/** A supported Fuse locale. */
+export type Locale = (typeof LOCALES)[number];
+
+/** The locale a deck gets when `deck.json` names none. */
+export const DEFAULT_LOCALE = "en-US" satisfies Locale;
+
 /** `deck.json` as the deck stores it. */
 export const DeckManifest = Schema.Struct({
   /** The deck's title, shown in the browser tab. */
@@ -30,6 +39,8 @@ export const DeckManifest = Schema.Struct({
   density: Schema.Literals(DENSITIES),
   /** The slide canvas proportion. */
   aspect: Schema.Literals(ASPECTS),
+  /** Fuse locale for charts, dates and translated component strings. Defaults to `"en-US"`. */
+  locale: Schema.optionalKey(Schema.Literals(LOCALES)),
   /** The slide ids in presentation order, each once. */
   order: Schema.UniqueArray(SlideId),
 });
