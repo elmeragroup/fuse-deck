@@ -1,24 +1,28 @@
 /**
- * The backend's status as main reports it to the stub page. It crosses IPC, so it is a schema:
- * main encodes it and the page decodes it. This module imports only Schema, so the page's bundle
- * stays free of Node.
+ * The backend's status as main tracks it. A run is Ready once main holds its session bearer,
+ * which the renderer receives over IPC; the bootstrap credential never leaves main.
  */
 
-import * as Schema from "effect/Schema";
+import type * as Redacted from "effect/Redacted";
 
-/** Where the backend stands, as the stub page shows it. */
-export const BackendStatus = Schema.Union([
-  /** A run is starting and has not printed its readiness document yet. */
-  Schema.TaggedStruct("Starting", { attempt: Schema.Int }),
-  /** The backend serves the deck at `url`. */
-  Schema.TaggedStruct("Ready", { url: Schema.String }),
-  /** The last run ended; the next one starts after `delayMillis`. */
-  Schema.TaggedStruct("Restarting", {
-    reason: Schema.String,
-    attempt: Schema.Int,
-    delayMillis: Schema.Finite,
-  }),
-]);
+/** What one run of the backend gets on stdin, and the credential inside it. */
+export type BackendLaunch = {
+  /** The launch document, one line of JSON. */
+  readonly stdin: string;
+  /** The bootstrap credential the document carries. */
+  readonly bootstrap: Redacted.Redacted<string>;
+};
 
 /** Where the backend stands. */
-export type BackendStatus = typeof BackendStatus.Type;
+export type BackendStatus =
+  /** A run is starting: it has not printed its readiness document, or main holds no bearer yet. */
+  | { readonly _tag: "Starting"; readonly attempt: number }
+  /** The backend listens at `url`, and `bearer` is the session bearer main traded for. */
+  | { readonly _tag: "Ready"; readonly url: string; readonly bearer: Redacted.Redacted<string> }
+  /** The last run ended; the next one starts after `delayMillis`. */
+  | {
+      readonly _tag: "Restarting";
+      readonly reason: string;
+      readonly attempt: number;
+      readonly delayMillis: number;
+    };

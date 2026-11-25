@@ -106,7 +106,7 @@ export const scaffoldDeck = Effect.fn("scaffoldDeck")(function* (input: Scaffold
     ],
     [slidePath(COVER_ID), coverSlide(title, input.brief)],
     ["AGENTS.md", agentsFile(title)],
-    [".gitignore", ".fuse-deck/\ndist/\n"],
+    [".gitignore", "dist/\n"],
     ...Option.match(input.brief, {
       onNone: () => [],
       onSome: (brief): Array<[string, string]> => [["BRIEF.md", brief]],

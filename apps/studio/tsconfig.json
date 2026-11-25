@@ -1,0 +1,12 @@
+{
+  "extends": "@elmeragroup/typescript-config/base.json",
+  "compilerOptions": {
+    // The backend, the build configs and the tests run in Node: no DOM types.
+    "lib": ["ESNext"],
+    "erasableSyntaxOnly": true,
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true
+  },
+  "include": ["src/server", "src/contract", "tsdown.config.ts", "vite.config.ts", "vitest.config.ts"]
+}

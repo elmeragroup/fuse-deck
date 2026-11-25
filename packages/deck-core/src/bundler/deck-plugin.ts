@@ -13,8 +13,12 @@
  * - A change to `deck.json` or to the set of slide files reloads the page. A slide edit that changes
  *   what the manifest emits for that slide invalidates it and reloads; any other slide edit is
  *   normal HMR. After a manifest load fails, the next edit under `slides/` invalidates and reloads.
+ * - With an embedder, every dev response carries `Content-Security-Policy: frame-ancestors
+ *   <origin>`, so only that page may frame the deck, and the manifest names the embedder, which
+ *   turns on the runtime's preview bridge.
  */
 
+import * as Option from "effect/Option";
 import path from "node:path";
 import type { Plugin, ViteDevServer } from "vite";
 
@@ -37,6 +41,14 @@ const OPTIMIZABLE = /\.[cm]?[jt]s$/;
 function isInNodeModules(file: string): boolean {
   return file.split(/[\\/]/).includes("node_modules");
 }
+
+/** The page that frames the deck in the studio's preview, and the deck scope it opened. */
+export type Embedder = {
+  /** The framing page's origin, such as `fuse-deck-studio://app`. */
+  readonly origin: string;
+  /** The studio's id for this opening of the deck; every bridge message carries it. */
+  readonly scopeId: string;
+};
 
 /** The manifest module's source, and what it emits for each slide file. */
 export type DeckManifestModule = {
@@ -62,6 +74,8 @@ export type DeckPluginInput = {
   readonly runtimeRoot: string;
   /** The file React, React DOM and Fuse resolve from, as if it imported them. */
   readonly resolveAnchor: string;
+  /** The page allowed to frame the dev server's responses, or none to send no framing policy. */
+  readonly embedder: Option.Option<Embedder>;
   /** The deck's title, for the shell's `<title>`. */
   readonly title: () => Promise<string>;
   /** The first-paint attributes and bootstrap, read again for each page. */
@@ -105,6 +119,21 @@ export function deckPlugins(input: DeckPluginInput): Plugin[] {
   let loadFailed = false;
 
   return [
+    {
+      name: "fuse-deck:frame-ancestors",
+      // Before Vite's own middlewares and the HTML shell's, so every response gets the header.
+      configureServer(server) {
+        Option.match(input.embedder, {
+          onNone: () => undefined,
+          onSome: ({ origin }) => {
+            server.middlewares.use((_request, response, next) => {
+              response.setHeader("Content-Security-Policy", `frame-ancestors ${origin}`);
+              next();
+            });
+          },
+        });
+      },
+    },
     {
       name: "fuse-deck:resolve",
       enforce: "pre",

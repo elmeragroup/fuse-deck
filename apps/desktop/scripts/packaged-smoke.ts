@@ -1,14 +1,17 @@
 /**
- * The packaged smoke test: S0's proof that the packaged app runs with no checkout and a bare PATH.
+ * The packaged smoke test: the proof that the packaged app runs with no checkout and a bare PATH.
  *
  * It copies the packaged app and the fixture deck (one slide that imports
  * `@elmeragroup/fuse/button`) into a fresh temporary directory, so no workspace sits on any path the
  * app sees. It launches the copied app's executable through Playwright's Electron driver, with
- * `PATH=/usr/bin:/bin`, that directory as the working directory and its own user data directory.
- * It checks that the backend runs on the app's own executable, that the window frames the deck
- * from 127.0.0.1 under the page's Content-Security-Policy, and that the frame renders the slide and
- * its Fuse Button. Then it quits the app
- * as a user does, through `app.quit()`, and checks that the app exited 0 and the backend is gone.
+ * `PATH=/usr/bin:/bin`, that directory as the working directory, its own user data directory and
+ * `FUSE_DECK_STUDIO_DECK` naming the deck. It checks that the studio backend runs on the app's own
+ * executable, that the window frames the deck from 127.0.0.1 under the page's
+ * Content-Security-Policy, that the frame renders the slide and its Fuse Button, and that the
+ * sidebar marks the slide current. Then it kills the backend, and checks that the app starts a new
+ * one and the window reconnects to it and frames the deck again from the new run's dev server.
+ * Last it quits the app as a user does, through `app.quit()`, and checks that the app exited 0 and
+ * the backend is gone.
  *
  * Usage: node scripts/packaged-smoke.ts (after `package`)
  */
@@ -24,7 +27,7 @@ import * as Stream from "effect/Stream";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { _electron } from "playwright";
-import type { ElectronApplication } from "playwright";
+import type { Page } from "playwright";
 
 /** One step of the smoke test failed. */
 class SmokeFailed extends Schema.TaggedError<SmokeFailed>()("SmokeFailed", {
@@ -36,8 +39,20 @@ const PRODUCT_NAME = "fuse-deck studio";
 const packagedApp = path.join(desktopRoot, ".artifacts", "release", "mac-arm64", `${PRODUCT_NAME}.app`);
 const fixtureDeck = path.join(desktopRoot, "test", "fixtures", "deck");
 
-/** The fixture deck's backend command line carries this path inside the copied app. */
-const BACKEND_ENTRY = path.join("backend", "node_modules", "@elmeragroup", "fuse-deck", "dist", "bin.mjs");
+/** The backend's command line carries this path inside the copied app. */
+const BACKEND_ENTRY = path.join(
+  "backend",
+  "node_modules",
+  "@elmeragroup",
+  "fuse-deck-studio",
+  "dist",
+  "server",
+  "bin.mjs"
+);
+
+/** The fixture deck's title, which names the preview frame. */
+const DECK_TITLE = "Studio smoke";
+const PREVIEW = `iframe[title="${DECK_TITLE} preview"]`;
 
 /** Run a command to completion and return its stdout; a non-zero exit fails. */
 const run = Effect.fn("run")(function* (command: string, args: readonly string[]) {
@@ -153,8 +168,19 @@ const smoke = Effect.gen(function* () {
   });
 
   const windowErrors: string[] = [];
+  const window = yield* Effect.tryPromise({
+    try: () => electronApp.firstWindow({ timeout: 60_000 }),
+    catch: (cause) => new SmokeFailed({ message: `No window opened: ${String(cause)}` }),
+  });
+  // The page and its frame log here, Content-Security-Policy violations included.
+  window.on("console", (message) => {
+    if (message.type() === "error") {
+      windowErrors.push(`console.error: ${message.text()}`);
+    }
+  });
+  window.on("pageerror", (error) => windowErrors.push(`pageerror: ${error.message}`));
   const frameUrl = yield* Effect.tryPromise({
-    try: () => renderSlide(electronApp, windowErrors),
+    try: () => renderSlide(window, null),
     catch: (cause) =>
       new SmokeFailed({
         message: `The window did not render the slide: ${String(cause)}\n[window errors]\n${windowErrors.join("\n")}\n[app output]\n${output.join("")}`,
@@ -184,6 +210,32 @@ const smoke = Effect.gen(function* () {
   }
   yield* Console.log(`The backend is pid ${String(backend.pid)}: ${backend.command}`);
 
+  // A crashed backend: main starts another, exchanges its bootstrap credential, and the window
+  // reconnects with the new bearer and opens the deck again.
+  yield* Effect.sync(() => killIfAlive(backend.pid));
+  const restarted = yield* Effect.tryPromise({
+    try: () => renderSlide(window, frameUrl),
+    catch: (cause) =>
+      new SmokeFailed({
+        message: `The window did not recover from a backend restart: ${String(cause)}\n[window errors]\n${windowErrors.join("\n")}\n[app output]\n${output.join("")}`,
+      }),
+  });
+  const replacements = (yield* childProcesses(mainPid)).filter(({ command }) =>
+    command.includes(BACKEND_ENTRY)
+  );
+  const [replacement] = replacements;
+  if (replacement === undefined || replacements.length !== 1 || replacement.pid === backend.pid) {
+    return yield* new SmokeFailed({
+      message: `Expected one new backend child after the restart, found ${replacements.map(({ pid }) => String(pid)).join(", ")}.`,
+    });
+  }
+  // The renderer's own reconnect attempts log transport errors while the backend is down; only
+  // errors after recovery would mean something.
+  windowErrors.length = 0;
+  yield* Console.log(
+    `After killing pid ${String(backend.pid)}, backend pid ${String(replacement.pid)} serves the deck again at ${restarted}`
+  );
+
   yield* Effect.tryPromise({
     try: () => electronApp.close(),
     catch: (cause) => new SmokeFailed({ message: `The app did not quit: ${String(cause)}` }),
@@ -195,48 +247,55 @@ const smoke = Effect.gen(function* () {
       message: `The app exited with code ${String(exit.code)} and signal ${String(exit.signal)}, not 0.`,
     });
   }
-  if (isAlive(backend.pid)) {
-    return yield* new SmokeFailed({ message: `The backend, pid ${String(backend.pid)}, outlived the app.` });
+  if (isAlive(replacement.pid)) {
+    return yield* new SmokeFailed({
+      message: `The backend, pid ${String(replacement.pid)}, outlived the app.`,
+    });
   }
   if (
-    !output.join("").includes(`[backend] stopped pid ${String(backend.pid)}: the backend exited with code`)
+    !output
+      .join("")
+      .includes(`[backend] stopped pid ${String(replacement.pid)}: the backend exited with code`)
   ) {
     return yield* new SmokeFailed({ message: "The app did not report the backend's exit on quit." });
   }
   yield* Console.log(
-    "Packaged smoke passed: the copied app started with a bare PATH, ran the backend on its own executable, framed the deck from 127.0.0.1, rendered the slide's Fuse Button, and quit with exit 0 after its backend exited."
+    "Packaged smoke passed: the copied app started with a bare PATH, ran the studio backend on its own executable, framed the deck from 127.0.0.1, rendered the slide's Fuse Button, recovered from a killed backend, and quit with exit 0 after its backend exited."
   );
 }).pipe(Effect.scoped);
 
 /**
- * Wait for the stub page to frame the deck, then for the slide and its Fuse Button inside the frame.
- * The first load optimizes the deck's dependencies and reloads the frame once, so the waits allow
- * for a cold start.
+ * Wait for the window to frame the deck, then for the slide and its Fuse Button inside the frame,
+ * and for the sidebar to mark the slide current. The first load optimizes the deck's dependencies
+ * and reloads the frame once, so the waits allow for a cold start.
  *
- * @param windowErrors - Collects the window's console errors and page errors.
+ * @param previous - The frame address before a restart, which the new one must differ from, or null.
  * @returns The frame's address.
  */
-async function renderSlide(electronApp: ElectronApplication, windowErrors: string[]): Promise<string> {
-  const window = await electronApp.firstWindow({ timeout: 60_000 });
-  // The page and its frame log here, Content-Security-Policy violations included.
-  window.on("console", (message) => {
-    if (message.type() === "error") {
-      windowErrors.push(`console.error: ${message.text()}`);
-    }
-  });
-  window.on("pageerror", (error) => windowErrors.push(`pageerror: ${error.message}`));
-  const frame = window.frameLocator("#deck");
+async function renderSlide(window: Page, previous: string | null): Promise<string> {
+  const preview = window.locator(PREVIEW);
+  if (previous !== null) {
+    // A selector, not a page function: the window's policy runs no evaluated script.
+    await window
+      .locator(`${PREVIEW}:not([src=${JSON.stringify(previous)}])`)
+      .waitFor({ state: "attached", timeout: 120_000 });
+  }
+  const frame = window.frameLocator(PREVIEW);
   const slide = frame.locator('section[aria-roledescription="slide"]');
   try {
     await slide.and(frame.getByRole("region", { name: "Intro" })).waitFor({ timeout: 120_000 });
     await frame.getByRole("button", { name: "Ask" }).waitFor({ timeout: 30_000 });
+    await window
+      .getByRole("button", { name: "Intro" })
+      .and(window.locator('[aria-current="true"]'))
+      .waitFor({ timeout: 30_000 });
   } catch (error) {
-    // What the stub page shows says how far startup got.
+    // What the status line shows says how far startup got.
     const status = await window
-      .locator("#status")
+      .getByRole("status")
       .textContent({ timeout: 1_000 })
       .catch(() => null);
-    throw new Error(`${String(error)}\nThe stub page's status: ${String(status)}`, { cause: error });
+    throw new Error(`${String(error)}\nThe studio's status: ${String(status)}`, { cause: error });
   }
   // A missing policy would make the page more permissive and pass everything above, so read it.
   const policy = Schema.decodeUnknownSync(Schema.NullOr(Schema.String))(
@@ -246,10 +305,10 @@ async function renderSlide(electronApp: ElectronApplication, windowErrors: strin
   );
   if (policy === null || !policy.split("; ").includes("frame-src http://127.0.0.1:*")) {
     throw new Error(
-      `The stub page's Content-Security-Policy lacks frame-src http://127.0.0.1:*: ${String(policy)}`
+      `The studio's Content-Security-Policy lacks frame-src http://127.0.0.1:*: ${String(policy)}`
     );
   }
-  const src = await window.locator("#deck").getAttribute("src");
+  const src = await preview.getAttribute("src");
   if (src === null) {
     throw new Error("The deck frame has no src.");
   }

@@ -1,7 +1,7 @@
 // Derived from pingdotgg/t3code apps/desktop/src/electron/ElectronProtocol.ts at 2fe7febc.
 // MIT licence, Copyright (c) 2026 T3 Tools Inc. See THIRD_PARTY_NOTICES.md.
-// Changes: renames the schemes; `makeDesktopContentSecurityPolicy` builds the studio's packaged
-// policy; only the asset handler remains, since S0 has no dev renderer server to proxy.
+// Changes: renames the schemes; `makeDesktopContentSecurityPolicy` builds the studio's policy,
+// packaged and dev; the dev proxy drops the Clerk input.
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Mime from "effect/http/Mime";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
@@ -58,8 +59,7 @@ export class ElectronProtocolUnregistrationError extends Schema.TaggedError<Elec
 
 export type DesktopProtocolRegistrationInput = {
   readonly scheme: string;
-  readonly assetDirectory: string;
-};
+} & ({ readonly targetOrigin: URL } | { readonly assetDirectory: string });
 
 export class ElectronProtocol extends Context.Service<
   ElectronProtocol,
@@ -70,14 +70,16 @@ export class ElectronProtocol extends Context.Service<
   }
 >()("@elmeragroup/fuse-deck-studio/electron/ElectronProtocol") {}
 
-// The packaged policy from the studio plan (D3). No inline script: the page's scripts are files.
-// Inline styles stay allowed for Fuse. Decks are framed from their own 127.0.0.1 dev servers, on
-// whichever port each one gets, so neither opening a deck nor restarting the backend changes the
-// policy. Framing grants no read access to the deck.
-export function makeDesktopContentSecurityPolicy(): string {
+// The policy from the studio plan (D3). Packaged, no inline script runs: the page's scripts are
+// files. Inline styles stay allowed for Fuse. Decks are framed from their own 127.0.0.1 dev
+// servers, on whichever port each one gets, and the backend listens on whichever port its run
+// gets, so neither opening a deck nor restarting the backend changes the policy. Framing grants no
+// read access to the deck. The dev renderer adds the one thing Vite needs past that: the inline
+// React Refresh preamble. Its HMR socket on 127.0.0.1 is already in `connect-src`.
+export function makeDesktopContentSecurityPolicy(isDevelopment: boolean): string {
   return [
     "default-src 'self'",
-    "script-src 'self' 'wasm-unsafe-eval'",
+    isDevelopment ? "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'" : "script-src 'self' 'wasm-unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
     "worker-src 'self' blob:",
     "img-src 'self' data: blob:",
@@ -133,6 +135,70 @@ const registerDesktopSchemePrivileges = Effect.sync(registerDesktopSchemePrivile
 
 export const layerSchemePrivileges = Layer.effectDiscard(registerDesktopSchemePrivileges);
 
+class ElectronProtocolFetchError extends Schema.TaggedError<ElectronProtocolFetchError>()(
+  "ElectronProtocolFetchError",
+  { cause: Schema.Defect() },
+) {}
+
+const netFetch = (url: string, init: RequestInit) =>
+  Effect.tryPromise({
+    try: () => Electron.net.fetch(url, init),
+    catch: (cause) => new ElectronProtocolFetchError({ cause }),
+  });
+
+const fetchWithTransientRetry = (url: string, init: RequestInit) =>
+  netFetch(url, init).pipe(
+    Effect.retry({ schedule: Schedule.exponential("50 millis", 3), times: 2 }),
+  );
+
+const proxyRequest = Effect.fn("desktop.protocol.proxyRequest")(function* (
+  request: Request,
+  targetOrigin: URL,
+  contentSecurityPolicy: string,
+) {
+  const requestUrl = new URL(request.url);
+  if (requestUrl.host !== DESKTOP_HOST) {
+    return new Response(null, { status: 404 });
+  }
+
+  // Assign the path so leading slashes cannot replace the configured host.
+  const targetUrl = new URL(targetOrigin);
+  targetUrl.pathname = requestUrl.pathname;
+  targetUrl.search = requestUrl.search;
+  const headers = new Headers(request.headers);
+  const headersToRemove: string[] = [];
+  for (const name of headers.keys()) {
+    if (
+      name === "host" ||
+      name === "origin" ||
+      name === "referer" ||
+      name === "connection" ||
+      name === "content-length" ||
+      name === "accept-encoding" ||
+      name === "upgrade-insecure-requests" ||
+      name.startsWith("sec-fetch-")
+    ) {
+      headersToRemove.push(name);
+    }
+  }
+  for (const name of headersToRemove) {
+    headers.delete(name);
+  }
+  const init: RequestInit = {
+    method: request.method,
+    headers,
+  };
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    init.body = request.body;
+    (init as RequestInit & { duplex: "half" }).duplex = "half";
+  }
+  const response =
+    request.method === "GET" || request.method === "HEAD"
+      ? yield* fetchWithTransientRetry(targetUrl.toString(), init)
+      : yield* netFetch(targetUrl.toString(), init);
+  return withContentSecurityPolicy(response, contentSecurityPolicy);
+});
+
 const serveDesktopAsset = Effect.fn("desktop.protocol.serveAsset")(function* (
   request: Request,
   assetDirectory: string,
@@ -179,17 +245,26 @@ export const make = Effect.gen(function* () {
     function* (input: DesktopProtocolRegistrationInput) {
       if (yield* Ref.get(registered)) return;
 
-      const contentSecurityPolicy = makeDesktopContentSecurityPolicy();
+      const contentSecurityPolicy = makeDesktopContentSecurityPolicy("targetOrigin" in input);
 
       yield* Effect.acquireRelease(
         Effect.try({
           try: () => {
-            Electron.protocol.handle(input.scheme, async (request) =>
-              withContentSecurityPolicy(
-                await runPromise(serveDesktopAsset(request, input.assetDirectory)),
-                contentSecurityPolicy,
-              ),
-            );
+            Electron.protocol.handle(input.scheme, async (request) => {
+              if ("assetDirectory" in input) {
+                return withContentSecurityPolicy(
+                  await runPromise(serveDesktopAsset(request, input.assetDirectory)),
+                  contentSecurityPolicy,
+                );
+              }
+              return runPromise(
+                proxyRequest(request, input.targetOrigin, contentSecurityPolicy).pipe(
+                  Effect.catchTags({
+                    ElectronProtocolFetchError: (error) => Effect.die(error.cause),
+                  }),
+                ),
+              );
+            });
           },
           catch: (cause) => new ElectronProtocolRegistrationError({ scheme: input.scheme, cause }),
         }).pipe(Effect.andThen(Ref.set(registered, true))),

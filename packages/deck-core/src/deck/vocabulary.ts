@@ -127,9 +127,13 @@ export const FILES = [
   {
     path: "slides/<id>.mdx",
     summary:
-      "One slide: optional frontmatter, then MDX. The first heading is the slide's title. Import local components and assets with relative paths.",
+      "One slide: optional frontmatter, then MDX. The first heading is the slide's title. Import local components and assets with relative paths. Style with Fuse and plain .css files: Sass, Less, Stylus and CSS Modules do not load.",
   },
   { path: "BRIEF.md", summary: "The brief the deck was created from, verbatim." },
   { path: "AGENTS.md", summary: "Where an agent starts." },
-  { path: ".fuse-deck/", summary: "Vite's cache. Ignored by the .gitignore `create` writes." },
+  {
+    path: "public/",
+    summary:
+      "Files served and built as they are, by their path from the deck's root. Every file in a deck is a regular file or a directory: a deck holds no symbolic links, and one that does fails to open with DeckEntryRefused.",
+  },
 ] as const;

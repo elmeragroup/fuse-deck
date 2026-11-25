@@ -40,7 +40,19 @@ const fixture = Effect.acquireRelease(
     await symlink(path.join(parent, "sources", "slides"), path.join(linked, "slides"));
     await mkdir(path.join(parent, "built", "..talk", "slides"), { recursive: true });
     await writeFile(path.join(parent, "built", BUILD_MARKER), "");
-    return { parent, deck, decks: { talk: deck, linked, dotted: path.join(parent, "built", "..talk") } };
+    // A deck whose dist/ and site/ link to empty directories outside it.
+    const linkedOut = path.join(parent, "linked-out");
+    await mkdir(path.join(linkedOut, "slides"), { recursive: true });
+    await writeFile(path.join(linkedOut, "deck.json"), "{}");
+    await mkdir(path.join(parent, "outside-dist"));
+    await mkdir(path.join(parent, "outside-site"));
+    await symlink(path.join(parent, "outside-dist"), path.join(linkedOut, "dist"));
+    await symlink(path.join(parent, "outside-site"), path.join(linkedOut, "site"));
+    return {
+      parent,
+      deck,
+      decks: { talk: deck, linked, dotted: path.join(parent, "built", "..talk"), linkedOut },
+    };
   }),
   ({ parent }) => Effect.promise(() => rm(parent, { recursive: true, force: true }))
 );
@@ -84,6 +96,18 @@ describe("resolveBuildOutput", () => {
       name: "a non-empty directory no build wrote",
       out: "../notes",
       reason: "an earlier build did not write",
+    },
+    {
+      name: "a dist that links out of the deck",
+      deck: "linkedOut" as const,
+      out: "dist",
+      reason: "symbolic link",
+    },
+    {
+      name: "a directory in the deck under a link out of it",
+      deck: "linkedOut" as const,
+      out: "site/out",
+      reason: "symbolic link",
     },
   ])("refuses $name", ({ deck = "talk" as const, out, reason }) =>
     Effect.gen(function* () {

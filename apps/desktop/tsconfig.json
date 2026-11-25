@@ -8,7 +8,5 @@
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true
   },
-  "include": ["src", "scripts", "test", "tsdown.config.ts", "vitest.config.ts"],
-  // The stub page runs in the renderer, under tsconfig.renderer.json.
-  "exclude": ["src/renderer"]
+  "include": ["src", "scripts", "test", "tsdown.config.ts", "vitest.config.ts"]
 }

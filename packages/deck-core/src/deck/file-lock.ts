@@ -18,7 +18,7 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
-import type * as PlatformError from "effect/PlatformError";
+import * as PlatformError from "effect/PlatformError";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
@@ -205,10 +205,24 @@ function unlock({ file, token }: Held): Effect.Effect<void, never, FileSystem.Fi
   }).pipe(Effect.ignore);
 }
 
-/** The lock file's text, or none when it does not exist. */
+/**
+ * The lock file's text, or none when it does not exist. The file sits in a deck, which is
+ * untrusted: a link or a special file there, such as a named pipe that would hold the read open,
+ * fails before anything reads it.
+ */
 function readRecord(fs: FileSystem.FileSystem, file: string) {
-  return fs.readFileString(file).pipe(
-    Effect.asSome,
+  return fs.lstat(file).pipe(
+    Effect.flatMap((info) =>
+      info.type === "File"
+        ? fs.readFileString(file).pipe(Effect.asSome)
+        : Effect.fail(
+            PlatformError.badArgument({
+              module: "FileSystem",
+              method: "readFileString",
+              description: `${file} is not a regular file.`,
+            })
+          )
+    ),
     Effect.catchIf(isNotFound, () => Effect.succeed(Option.none<string>()))
   );
 }

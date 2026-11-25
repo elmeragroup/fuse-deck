@@ -13,6 +13,7 @@ import * as Scope from "effect/Scope";
 
 import type * as Electron from "electron";
 
+import { DEFAULT_BACKEND_TIMING } from "../backend/backend-manager.ts";
 import * as DesktopShutdown from "./DesktopShutdown.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
@@ -88,10 +89,10 @@ interface QuitState {
   waitingSinceNanos: bigint;
 }
 
-// Longer than a backend's stop budget (SIGTERM, 5s grace, SIGKILL, 1s wait),
-// so a double Cmd-Q at the start of a normal quit cannot cut the backend stop
-// short and orphan it.
-const SHUTDOWN_STALL_THRESHOLD = Duration.seconds(10);
+// Longer than a backend's stop budget (SIGTERM, the grace before SIGKILL, then
+// a few seconds for the kill), so a double Cmd-Q at the start of a normal quit
+// cannot cut the backend stop short and orphan it.
+const SHUTDOWN_STALL_THRESHOLD = Duration.sum(DEFAULT_BACKEND_TIMING.terminateGrace, Duration.seconds(5));
 
 const startWaitingForShutdown = Effect.fn("desktop.lifecycle.startWaitingForShutdown")(function* (
   quit: QuitState,

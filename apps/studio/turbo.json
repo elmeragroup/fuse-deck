@@ -1,0 +1,14 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    // The unit tests spawn the built backend.
+    "test": {
+      "dependsOn": ["build"]
+    },
+    // The desktop app stages this package's tarball as its backend.
+    "pack": {
+      "dependsOn": ["build"],
+      "outputs": [".artifacts/**"]
+    }
+  }
+}

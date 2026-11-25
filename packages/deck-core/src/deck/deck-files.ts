@@ -7,17 +7,23 @@
  * `add` writes the slide file before `deck.json`, and `remove` writes `deck.json` before it
  * deletes the file, so a crash can leave an orphan file, which `check` reports, but never an id
  * without a file. `deck.json` is written to a temporary file and renamed into place.
+ *
+ * A deck holds no symbolic links and no special files: opening one refuses it, and every read and
+ * write checks its path again, so a link made later is refused too (see `contained-file.ts`).
  */
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 
+import { deckEntry, describeRefusal, findDeckLink } from "./contained-file.ts";
+import type { DeckEntryKind } from "./contained-file.ts";
 import * as DeckManifest from "./deck-manifest.ts";
 import type { OrderPosition } from "./deck-manifest.ts";
 import { holdLock } from "./file-lock.ts";
@@ -41,6 +47,16 @@ export class DeckNotFound extends Schema.TaggedError<DeckNotFound>()("DeckNotFou
 /** A deck file could not be read or written. */
 export class DeckIoFailed extends Schema.TaggedError<DeckIoFailed>()("DeckIoFailed", {
   message: Schema.String,
+  path: Schema.String,
+}) {}
+
+/**
+ * The deck holds a symbolic link or a special file. A deck is self-contained, so it holds only
+ * regular files and directories; the check skips `.git` and `node_modules`.
+ */
+export class DeckEntryRefused extends Schema.TaggedError<DeckEntryRefused>()("DeckEntryRefused", {
+  message: Schema.String,
+  hint: Schema.String,
   path: Schema.String,
 }) {}
 
@@ -126,7 +142,8 @@ export class DeckFiles extends Context.Service<
    * The deck in `start` or the nearest directory above it that holds a `deck.json`.
    *
    * @param start - The directory to search from, usually the working directory.
-   * @returns A layer that fails with `DeckNotFound` when no directory up to the root holds a deck.
+   * @returns A layer that fails with `DeckNotFound` when no directory up to the root holds a deck,
+   *   and with `DeckEntryRefused` when the deck holds a symbolic link or a special file.
    */
   static readonly layerFrom = (start: string) =>
     Layer.effect(
@@ -134,6 +151,21 @@ export class DeckFiles extends Context.Service<
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const root = yield* findDeckRoot(fs, path.resolve(start));
+        const found = yield* findDeckLink(fs, root);
+        if (Option.isSome(found)) {
+          const relative = path.relative(root, found.value.file);
+          return yield* new DeckEntryRefused({
+            message:
+              found.value._tag === "Link"
+                ? `${relative} is a symbolic link, and a deck holds none.`
+                : `${relative} is neither a regular file nor a directory, and a deck holds only those.`,
+            hint:
+              found.value._tag === "Link"
+                ? "Replace the link with a copy of what it points to, inside the deck."
+                : "Delete it, or move it out of the deck.",
+            path: found.value.file,
+          });
+        }
         return makeDeckFiles(fs, root);
       })
     );
@@ -171,8 +203,58 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
   const slidesDir = path.join(root, SLIDES_DIR);
   const slideFile = (id: SlideId) => path.join(root, slidePath(id));
 
+  /**
+   * The path of `file` under the deck's real root, once it is an entry of `kind` with no symbolic
+   * link in it (see `contained-file.ts`). Callers read and write through the path this returns, the
+   * one that was checked. A missing entry fails as missing.
+   */
+  const checkedPath = Effect.fnUntraced(function* (file: string, kind: DeckEntryKind) {
+    const entry = yield* deckEntry(fs, root, file, [kind]).pipe(Effect.mapError(ioFailed(file)));
+    if (entry._tag === "DeckEntry") {
+      return Option.some(entry.real);
+    }
+    if (entry._tag === "Missing") {
+      return Option.none<string>();
+    }
+    return yield* new DeckIoFailed({ message: describeRefusal(entry), path: file });
+  });
+
+  /** `checkedPath` for an entry that must exist. */
+  const existingPath = (file: string, kind: DeckEntryKind) =>
+    checkedPath(file, kind).pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.fail(new DeckIoFailed({ message: `${file} does not exist.`, path: file })),
+          onSome: Effect.succeed,
+        })
+      )
+    );
+
+  /** The text of `file`, read through its checked path. */
+  const readContained = (file: string) =>
+    existingPath(file, "File").pipe(
+      Effect.flatMap((real) => fs.readFileString(real).pipe(Effect.mapError(ioFailed(file))))
+    );
+
+  /** The slides directory's checked path, once it is a directory in the deck. */
+  const containedSlidesDir = existingPath(slidesDir, "Directory");
+
+  /**
+   * The entry `removeSlide` deletes: the slide's file in the checked slides directory, once it is
+   * a regular file or missing. None when there is no slides directory.
+   */
+  const removableSlide = Effect.fnUntraced(function* (id: SlideId) {
+    const directory = yield* checkedPath(slidesDir, "Directory");
+    if (Option.isNone(directory)) {
+      return Option.none<string>();
+    }
+    const entry = path.join(directory.value, path.basename(slideFile(id)));
+    yield* checkedPath(entry, "File");
+    return Option.some(entry);
+  });
+
   const readManifest = Effect.gen(function* () {
-    const text = yield* fs.readFileString(manifestFile).pipe(Effect.mapError(ioFailed(manifestFile)));
+    const text = yield* readContained(manifestFile);
     return yield* Effect.fromResult(DeckManifest.parseManifest(text));
   });
 
@@ -187,16 +269,23 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
     );
   };
 
-  const slideFileNames = fs.readDirectory(slidesDir).pipe(
-    Effect.catchIf(
-      (error) => error.reason._tag === "NotFound",
-      () => Effect.succeed([])
-    ),
-    Effect.mapBoth({
-      onFailure: ioFailed(slidesDir),
-      onSuccess: (names) => names.filter((name) => name.endsWith(".mdx")).sort(),
-    })
-  );
+  /**
+   * The `.mdx` names in the slides directory, once the directory and each of them is checked: a
+   * link or special file among them fails the listing, so the order and the orphans it reports
+   * name only regular files.
+   */
+  const slideFileNames = Effect.gen(function* () {
+    const directory = yield* checkedPath(slidesDir, "Directory");
+    if (Option.isNone(directory)) {
+      return [];
+    }
+    const names = yield* fs.readDirectory(directory.value).pipe(Effect.mapError(ioFailed(slidesDir)));
+    const slides = names.filter((name) => name.endsWith(".mdx")).sort();
+    for (const name of slides) {
+      yield* checkedPath(path.join(directory.value, name), "File");
+    }
+    return slides;
+  });
 
   /** Run an edit with the deck's lock held from the read through the last write. */
   const locked = <A, E>(edit: Effect.Effect<A, E>) =>
@@ -226,14 +315,15 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
       } satisfies LoadedDeck;
     }).pipe(Effect.withSpan("DeckFiles.load")),
 
-    readSlide: (id) => fs.readFileString(slideFile(id)).pipe(Effect.mapError(ioFailed(slideFile(id)))),
+    readSlide: (id) => readContained(slideFile(id)),
 
     addSlide: Effect.fn("DeckFiles.addSlide")(function* (id, position, text) {
       return yield* locked(
         Effect.gen(function* () {
           const next = yield* Effect.fromResult(DeckManifest.addSlide(yield* readManifest, id, position));
-          const file = slideFile(id);
           yield* fs.makeDirectory(slidesDir, { recursive: true }).pipe(Effect.mapError(ioFailed(slidesDir)));
+          // Create the file through the slides directory's real path, once it is inside the deck.
+          const file = path.join(yield* containedSlidesDir, path.basename(slideFile(id)));
           yield* fs.writeFileString(file, text, { flag: "wx" }).pipe(
             Effect.catchIf(
               (error) => error.reason._tag === "AlreadyExists",
@@ -268,9 +358,12 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
       return yield* locked(
         Effect.gen(function* () {
           const next = yield* Effect.fromResult(DeckManifest.removeSlide(yield* readManifest, id));
+          const file = yield* removableSlide(id);
           yield* writeManifest(next);
-          const file = slideFile(id);
-          yield* fs.remove(file, { force: true }).pipe(Effect.mapError(ioFailed(file)));
+          yield* Option.match(file, {
+            onNone: () => Effect.void,
+            onSome: (entry) => fs.remove(entry, { force: true }).pipe(Effect.mapError(ioFailed(entry))),
+          });
           return next;
         })
       );

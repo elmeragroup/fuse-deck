@@ -19,6 +19,14 @@ fuse-deck's `dependencies` too, or the build fails. deck-core takes the runtime 
 skill path from its host and resolves React, React DOM, Fuse and Vite's anchors from the running
 module.
 
+A deck is untrusted, self-contained input. Nothing in it runs in Node, nothing outside its directory
+is read, served or written for it, and it holds no symbolic links. Every path a host or the bundler
+reads, writes, lists, serves or copies goes through the one guard in
+`packages/deck-core/src/deck/contained-file.ts` (`deckEntry`, `deckEntrySync`); opening a deck
+refuses a link with `DeckEntryRefused`. Decks style slides with plain CSS: no Sass, Less, Stylus
+or CSS Modules. What Vite generates lives in storage the host owns (`Bundler.layer`'s
+`cacheRoot`), never in the deck.
+
 The browser runtime in `packages/deck-core/src/runtime` is plain React 19 with no Effect and no
 Node API. Slide motion uses React's `<ViewTransition>`; keep it to the slide change, `<Step>` and
 `<Morph>`, and keep the reduced-motion fallbacks in `deck.css`.
@@ -36,9 +44,18 @@ the tests together.
 
 Assert behavior against independently defined expectations. Never compute an expected result with
 the code under test. A test that flakes is made deterministic or deleted in the same change. Put
-each test in the cheapest project that can fail: `unit` for the deck model (in deck-core) and the spawned CLI,
-`browser` for a built deck in Chromium, the packed smoke test for the installed tarball, and
+each test in the cheapest project that can fail: `unit` for the deck model (in deck-core), the spawned CLI
+and the studio backend (in-process services and the spawned backend), `browser` for a built deck or
+the built studio renderer in Chromium, the packed smoke test for the installed tarball, and
 `test:packaged` in `apps/desktop` for the packaged desktop app.
+
+## Studio
+
+`apps/studio` is the studio's backend and renderer, `apps/desktop` its Electron shell. The backend
+admits a renderer by exact Origin plus a bearer-for-ticket exchange; keep CORS to the renderer's
+origin, never `*`, and set no cookie. Every call about an open deck carries its scope id and is
+refused before it runs when the scope is closing or gone. The renderer and the shared contract in
+`apps/studio/src/contract` import no Node API.
 
 While editing, run `pnpm exec vitest related <files> --run --project unit` in the package. Before
 review, run `pnpm check`; CI adds the browser suite, the packed smoke test and, on macOS, the

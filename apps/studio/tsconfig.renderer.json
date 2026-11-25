@@ -1,0 +1,13 @@
+{
+  "extends": "@elmeragroup/typescript-config/base.json",
+  "compilerOptions": {
+    // The renderer runs in a sandboxed Electron window or a browser tab: DOM and React, no Node.
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["@elmeragroup/typescript-config/css-custom-properties", "vite/client"],
+    "jsx": "react-jsx",
+    "exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true
+  },
+  "include": ["src/renderer", "src/contract"]
+}

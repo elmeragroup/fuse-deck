@@ -1,0 +1,58 @@
+{
+  "name": "@elmeragroup/fuse-deck-studio",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The fuse-deck studio's backend and renderer. Never published: the desktop app stages the packed backend and ships the built renderer.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./contract/desktop-bridge": "./src/contract/desktop-bridge.ts",
+    "./contract/studio-launch": "./src/contract/studio-launch.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/server",
+    "dist/runtime"
+  ],
+  "scripts": {
+    "build": "rm -rf dist && tsdown && vite build",
+    "dev": "vite",
+    "pack": "rm -rf .artifacts && pnpm pack --pack-destination .artifacts",
+    "test": "vitest run --project unit",
+    "test:browser": "vitest run --project browser",
+    "type-check": "tsrs --noEmit && tsrs --noEmit -p tsconfig.renderer.json && tsrs --noEmit -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@effect/platform-node": "catalog:",
+    "@mdx-js/mdx": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "effect": "catalog:",
+    "mdast-util-mdx-jsx": "catalog:",
+    "postcss": "catalog:",
+    "remark-frontmatter": "catalog:",
+    "vite": "catalog:",
+    "yaml": "catalog:"
+  },
+  "peerDependencies": {
+    "@elmeragroup/fuse": "^0.1.0-canary.213",
+    "react": "^19.3",
+    "react-dom": "^19.3"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@elmeragroup/deck-core": "workspace:*",
+    "@elmeragroup/fuse": "catalog:",
+    "@elmeragroup/typescript-config": "workspace:*",
+    "@tanstack/react-router": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "playwright": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tsdown": "catalog:",
+    "tsrs": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

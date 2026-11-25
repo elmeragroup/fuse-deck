@@ -9,6 +9,10 @@
  * elsewhere, cannot slip a source directory past the check. A directory that exists compares by its
  * device and inode, because on a volume that ignores case `Slides` names `slides/` and resolving
  * links keeps the spelling. Only the part of a path that does not exist yet compares by name.
+ *
+ * An output inside the deck, `dist` included, is a deck path: it must hold no symbolic link (see
+ * `contained-file.ts`), so a `dist` that links elsewhere cannot send the build out of the deck. An
+ * output the caller names outside the deck may be anywhere.
  */
 
 import * as Effect from "effect/Effect";
@@ -18,6 +22,7 @@ import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import path from "node:path";
 
+import { deckComponents, deckEntry, describeRefusal } from "../deck/contained-file.ts";
 import { SLIDES_DIR } from "../deck/deck-files.ts";
 
 /** The file `build` leaves in its output directory, so a later build knows it may empty it. */
@@ -49,6 +54,28 @@ export type BuildOutput = {
  */
 export const resolveBuildOutput = Effect.fn("resolveBuildOutput")(function* (root: string, out: string) {
   const fs = yield* FileSystem.FileSystem;
+  const realRoot = yield* fs.realPath(root).pipe(
+    Effect.mapError(
+      (error) =>
+        new BuildOutputRefused({
+          message: `build cannot resolve ${root}: ${error.message}`,
+          hint: "Pass a directory the build can read and write.",
+          path: root,
+        })
+    )
+  );
+  if (Option.isSome(deckComponents(root, realRoot, path.resolve(root, out)))) {
+    const entry = yield* deckEntry(fs, root, path.resolve(root, out), ["Directory"]).pipe(
+      Effect.orElseSucceed(() => ({ _tag: "Missing", file: out }) as const)
+    );
+    if (entry._tag === "Link" || entry._tag === "WrongKind") {
+      return yield* new BuildOutputRefused({
+        message: `build cannot write to ${path.resolve(root, out)}: ${describeRefusal(entry)}`,
+        hint: `Delete the link, or pass a directory outside the deck.`,
+        path: path.resolve(root, out),
+      });
+    }
+  }
   const deck = yield* locate(fs, root);
   const output = yield* locate(fs, path.resolve(root, out));
   const directory = output.path;
