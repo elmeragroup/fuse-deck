@@ -78,6 +78,8 @@ export type DeckPluginInput = {
   readonly embedder: Option.Option<Embedder>;
   /** The deck's title, for the shell's `<title>`. */
   readonly title: () => Promise<string>;
+  /** The deck's locale, for the shell's `<html lang>`. */
+  readonly locale: () => Promise<string>;
   /** The first-paint attributes and bootstrap, read again for each page. */
   readonly firstPaint: () => Promise<FirstPaint>;
   /** The manifest module. */
@@ -98,7 +100,7 @@ export function deckPlugins(input: DeckPluginInput): Plugin[] {
   const runtime = (file: string) => `/@fs${path.join(input.runtimeRoot, file)}`;
 
   const shell = async () => `<!doctype html>
-<html lang="en">
+<html lang="${escapeHtml(await input.locale())}">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />

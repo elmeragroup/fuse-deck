@@ -16,11 +16,12 @@ import type { ManifestEmbedder, MdxComponents } from "./manifest.ts";
 import { Morph } from "./morph.tsx";
 import { fromHash, moveForKey, moveTo, toHash } from "./position.ts";
 import type { Position } from "./position.ts";
+import { Split } from "./split.tsx";
 import { RevealedSteps, Step } from "./step.tsx";
 import { Video } from "./video.tsx";
 
 /** The components every slide gets without an import. */
-const MDX_COMPONENTS = { Step, Morph, Video } satisfies MdxComponents;
+const MDX_COMPONENTS = { Step, Morph, Video, Split } satisfies MdxComponents;
 
 /** A slide, loaded. */
 export type LoadedSlide = {

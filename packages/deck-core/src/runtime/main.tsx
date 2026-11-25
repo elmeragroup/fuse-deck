@@ -8,6 +8,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import manifest from "virtual:fuse-deck";
 
+import { LocaleProvider } from "@elmeragroup/fuse/theme";
+
 import { Deck } from "./deck.tsx";
 
 const slides = await Promise.all(
@@ -21,6 +23,8 @@ if (container === null) {
 
 createRoot(container).render(
   <StrictMode>
-    <Deck deck={{ title: manifest.title, aspect: manifest.aspect, embedder: manifest.embedder, slides }} />
+    <LocaleProvider locale={manifest.locale}>
+      <Deck deck={{ title: manifest.title, aspect: manifest.aspect, embedder: manifest.embedder, slides }} />
+    </LocaleProvider>
   </StrictMode>
 );

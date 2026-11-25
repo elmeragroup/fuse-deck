@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -405,6 +405,13 @@ describe("a built deck with video and blank slides", () => {
     await writeFile(path.join(deck, "assets", "clip.mp4"), TINY_MP4);
     fuseDeck(deck, ["slides", "add", "demo", "--layout", "center"]);
     fuseDeck(deck, ["slides", "add", "raw", "--layout", "blank"]);
+    fuseDeck(deck, ["slides", "add", "chart"]);
+    const deckJson = path.join(deck, "deck.json");
+    const rawManifest = await readFile(deckJson, "utf8");
+    await writeFile(
+      deckJson,
+      rawManifest.replace('"aspect": "16:9",', '"aspect": "16:9",\n  "locale": "nb-NO",')
+    );
     await writeFile(
       path.join(deck, "slides", "demo.mdx"),
       '---\nlayout: center\n---\n\nimport clip from "../assets/clip.mp4";\n\n<Video src={clip} title="Product demo" muted />\n'
@@ -412,6 +419,36 @@ describe("a built deck with video and blank slides", () => {
     await writeFile(
       path.join(deck, "slides", "raw.mdx"),
       '---\nlayout: blank\n---\n\nimport clip from "../assets/clip.mp4";\n\n<video src={clip} controls muted />\n'
+    );
+    await writeFile(
+      path.join(deck, "slides", "chart.mdx"),
+      [
+        'import { LiveLineChart } from "@elmeragroup/fuse/chart";',
+        "",
+        "export const points = [",
+        "  { time: Date.now() - 20_000, value: 12 },",
+        "  { time: Date.now() - 10_000, value: 48 },",
+        "  { time: Date.now(), value: 96 },",
+        "];",
+        "",
+        "# Velocity",
+        "",
+        '<Split ratio="2:3" align="center">',
+        "  <div>",
+        "    <p>Steady pace</p>",
+        "  </div>",
+        '  <LiveLineChart.Root data={points} windowMs={30_000} timeZone="Europe/Oslo" paused aria-label="Weekly velocity">',
+        '    <LiveLineChart.Grid variant="dashed" />',
+        '    <LiveLineChart.Area variant="solid" curve="monotone" />',
+        '    <LiveLineChart.Line curve="monotone" />',
+        '    <LiveLineChart.LiveDot variant="default" />',
+        "    <LiveLineChart.Badge />",
+        "    <LiveLineChart.XAxis />",
+        "    <LiveLineChart.YAxis />",
+        "  </LiveLineChart.Root>",
+        "</Split>",
+        "",
+      ].join("\n")
     );
     fuseDeck(deck, ["build"]);
     const server = await serve(path.join(deck, "dist"));
@@ -486,6 +523,34 @@ describe("a built deck with video and blank slides", () => {
     await page.keyboard.press("ArrowRight");
     await page.keyboard.press("ArrowLeft");
     expect(await page.evaluate(() => location.hash)).toBe("#/raw");
+    await page.close();
+  });
+
+  it("composes prose beside a Fuse LiveLineChart inside <Split> without errors", async () => {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        errors.push(message.text());
+      }
+    });
+    await page.goto(`${mediaSite}#/chart`);
+    const slide = page.locator("[aria-roledescription=slide]");
+    await slide.waitFor();
+
+    expect(await page.evaluate(() => document.documentElement.lang)).toBe("nb-NO");
+    expect(await slide.locator("[data-ratio='2:3'][data-align='center']").count()).toBe(1);
+    const figure = page.getByRole("figure", { name: "Weekly velocity" });
+    await figure.waitFor();
+    await expect.poll(() => figure.locator("svg path").count()).toBeGreaterThan(0);
+
+    // Focusing the chart's plot lets ArrowLeft step readings instead of leaving the slide.
+    const plot = figure.getByRole("listbox");
+    await plot.focus();
+    await page.keyboard.press("ArrowLeft");
+    expect(await page.evaluate(() => location.hash)).toBe("#/chart");
+    expect(errors).toEqual([]);
     await page.close();
   });
 });

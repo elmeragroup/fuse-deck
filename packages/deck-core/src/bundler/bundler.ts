@@ -45,6 +45,7 @@ import type { InlineConfig, Logger, ServerOptions, ViteDevServer } from "vite";
 import { deckEntry, describeRefusal } from "../deck/contained-file.ts";
 import { DeckFiles, SLIDES_DIR } from "../deck/deck-files.ts";
 import type { DeckIoFailed } from "../deck/deck-files.ts";
+import { DEFAULT_LOCALE } from "../deck/deck-manifest.ts";
 import type { DeckManifest, DeckManifestInvalid } from "../deck/deck-manifest.ts";
 import type { SlideFrontmatterInvalid } from "../deck/slide-source.ts";
 import { BUILD_MARKER, resolveBuildOutput } from "./build-output.ts";
@@ -247,6 +248,7 @@ export class Bundler extends Context.Service<
               resolveAnchor: RESOLVE_ANCHOR,
               embedder,
               title: () => run(Effect.map(deck.load, (loaded) => loaded.manifest.title)),
+              locale: () => run(Effect.map(deck.load, (loaded) => loaded.manifest.locale ?? DEFAULT_LOCALE)),
               firstPaint: () => run(deckFirstPaint),
               manifestModule: () => run(manifestModule(mode, compileOnce, embedder)),
               compileSlide: (file, text) =>
@@ -520,7 +522,7 @@ function manifestModule(
 
 /** The manifest module's source, from the deck's settings and each slide's entry. */
 function manifestSource(
-  manifest: { readonly title: string; readonly aspect: string },
+  manifest: { readonly title: string; readonly aspect: string; readonly locale?: string },
   slides: ReadonlyArray<{ readonly id: string; readonly entry: string }>,
   embedder: Option.Option<Embedder>
 ): string {
@@ -531,6 +533,7 @@ function manifestSource(
   return `export default {
   title: ${JSON.stringify(manifest.title)},
   aspect: ${JSON.stringify(manifest.aspect)},
+  locale: ${JSON.stringify(manifest.locale ?? DEFAULT_LOCALE)},
   embedder: ${JSON.stringify(Option.getOrNull(embedder))},
   slides: [
     ${items.join(",\n    ")}

@@ -22,12 +22,18 @@ describe("parseManifest", () => {
     expect(Result.isSuccess(parsed) && parsed.success.order).toEqual(["cover", "how-it-works", "q-and-a-2"]);
   });
 
+  it("accepts a supported Fuse locale in deck.json", () => {
+    const parsed = parseManifest(manifest({ locale: "nb-NO" }));
+    expect(Result.isSuccess(parsed) && parsed.success.locale).toBe("nb-NO");
+  });
+
   it.each([
     { name: "a slide id twice", fields: { order: ["cover", "cover"] }, mentions: "order" },
     { name: "a slide id that is not path-safe", fields: { order: ["../escape"] }, mentions: "order" },
     { name: "an unknown setting", fields: { transition: "fade" }, mentions: "transition" },
     { name: "an unknown density", fields: { density: "spacious" }, mentions: "density" },
     { name: "an unknown aspect", fields: { aspect: "21:9" }, mentions: "aspect" },
+    { name: "an unknown locale", fields: { locale: "de-DE" }, mentions: "locale" },
     { name: "an empty title", fields: { title: "" }, mentions: "title" },
   ])("rejects $name, naming where", ({ fields, mentions }) => {
     const parsed = parseManifest(manifest(fields));
