@@ -23,6 +23,10 @@ export const LAYOUTS = [
     name: "center",
     summary: "One idea in the middle of the slide, such as a quote, a number or a single image.",
   },
+  {
+    name: "blank",
+    summary: "An edge-to-edge canvas with no padding, for a full-bleed image, video or custom composition.",
+  },
 ] as const;
 
 /** A layout's name. */
@@ -63,6 +67,12 @@ export const COMPONENTS: readonly DeckComponent[] = [
     usage: '<Morph name="logo"><img src={logo} alt="Fuse" /></Morph>',
     summary:
       "Wraps exactly one HTML element, such as <img> or <span>. When the next slide has a Morph with the same name, the element travels from its old place to its new one during the slide change. A Morph without a partner fades with the slide. Names use lowercase letters, digits and dashes, once per slide. Import an image before using it (import logo from '../logo.svg'), so the build bundles it.",
+  },
+  {
+    name: "Video",
+    usage: '<Video src={demo} title="Demo" />',
+    summary:
+      "Renders a quiet Fuse play button on the slide (showing `title` inside the button when given), and lazily loads and expands the video edge-to-edge on the canvas when pressed. Press Escape or wait for the video to end to return to the slide. Import the video before using it (import demo from '../assets/demo.mp4'), so the build bundles it. Accepts optional title, poster, captions, loop and muted props.",
   },
 ];
 

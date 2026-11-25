@@ -32,6 +32,7 @@
     "type-check": "tsrs --noEmit && tsrs --noEmit -p tsconfig.runtime.json && tsrs --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "catalog:",
     "@mdx-js/mdx": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "effect": "catalog:",

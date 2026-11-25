@@ -96,6 +96,7 @@ export function Preview({
       ref={frame}
       src={deck.url}
       title={`${deck.title} preview`}
+      allow="autoplay; fullscreen"
       data-scope-id={deck.scopeId}
       className="studio-preview-frame"
     />

@@ -2,8 +2,14 @@
  * The studio's stylesheet. Fuse's standalone CSS brings the tokens and the components; the rules
  * below lay out the shell with Fuse's role tokens. No Tailwind runs here.
  */
+@import "@fontsource-variable/inter";
 @import "@elmeragroup/fuse/styles.css";
 @import "@elmeragroup/fuse/themes.css";
+
+:root {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-sans);
+}
 
 html,
 body,

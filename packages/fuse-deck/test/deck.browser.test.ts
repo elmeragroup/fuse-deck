@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -52,6 +52,10 @@ function contentType(extension: string): string {
       return "text/javascript";
     case ".css":
       return "text/css";
+    case ".mp4":
+      return "video/mp4";
+    case ".woff2":
+      return "font/woff2";
     default:
       return "application/octet-stream";
   }
@@ -381,5 +385,107 @@ describe("a deck in dev", () => {
       child.kill("SIGKILL");
       await exited;
     }
+  });
+});
+
+/** Valid 16x16 H.264 MP4 fixture (0.1 s), kept inline so tests need no media encoder in CI. */
+const TINY_MP4 = Buffer.from(
+  "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAANdbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAHgAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAod0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAHgAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAB4AAAEAAABAAAAAAH/bWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAyAAAABgBVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABqm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAWpzdGJsAAAAvnN0c2QAAAAAAAAAAQAAAK5hdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2My4yNC4xMDAgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAANGF2Y0MBZAAK/+EAF2dkAAqs2V7ARAAAAwAEAAADAMg8SJZYAQAGaOvjyyLA/fj4AAAAABBwYXNwAAAAAQAAAAEAAAAUYnRydAAAAAAAAL7iAAAAAAAAABhzdHRzAAAAAAAAAAEAAAADAAACAAAAABRzdHNzAAAAAAAAAAEAAAABAAAAKGN0dHMAAAAAAAAAAwAAAAEAAAQAAAAAAQAABgAAAAABAAACAAAAABxzdHNjAAAAAAAAAAEAAAABAAAAAwAAAAEAAAAgc3RzegAAAAAAAAAAAAAAAwAAAsUAAAAMAAAADAAAABRzdGNvAAAAAAAAAAEAAAONAAAAYnVkdGEAAABabWV0YQAAAAAAAAAhaGRscgAAAAAAAAAAbWRpcmFwcGwAAAAAAAAAAAAAAAAtaWxzdAAAACWpdG9vAAAAHWRhdGEAAAABAAAAAExhdmY2My4xNi4xMDAAAAAIZnJlZQAAAuVtZGF0AAACrgYF//+q3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NSByMzIyMiBiMzU2MDVhIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyNSAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTI1IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAD2WIhAAz//727L4FNhTIwQAAAAhBmiJsQr/+wAAAAAgBnkF5Cv/EgQ==",
+  "base64"
+);
+
+describe("a built deck with video and blank slides", () => {
+  let mediaSite = "";
+  let closeMedia: () => Promise<void> = () => Promise.resolve();
+
+  beforeAll(async () => {
+    fuseDeck(workspace, ["create", "media-talk"]);
+    const deck = path.join(workspace, "media-talk");
+    await mkdir(path.join(deck, "assets"), { recursive: true });
+    await writeFile(path.join(deck, "assets", "clip.mp4"), TINY_MP4);
+    fuseDeck(deck, ["slides", "add", "demo", "--layout", "center"]);
+    fuseDeck(deck, ["slides", "add", "raw", "--layout", "blank"]);
+    await writeFile(
+      path.join(deck, "slides", "demo.mdx"),
+      '---\nlayout: center\n---\n\nimport clip from "../assets/clip.mp4";\n\n<Video src={clip} title="Product demo" muted />\n'
+    );
+    await writeFile(
+      path.join(deck, "slides", "raw.mdx"),
+      '---\nlayout: blank\n---\n\nimport clip from "../assets/clip.mp4";\n\n<video src={clip} controls muted />\n'
+    );
+    fuseDeck(deck, ["build"]);
+    const server = await serve(path.join(deck, "dist"));
+    mediaSite = server.url;
+    closeMedia = server.close;
+  }, 120_000);
+
+  afterAll(async () => {
+    await closeMedia();
+  });
+
+  it("lazily opens <Video> into an overlay that keeps keyboard navigation until Escape or ended", async () => {
+    const page = await browser.newPage();
+    await page.goto(`${mediaSite}#/demo`);
+    await page.locator("[aria-roledescription=slide]").waitFor();
+
+    const play = page.getByRole("button", { name: "Play Product demo" });
+    await play.waitFor();
+    expect(await play.getAttribute("data-slot")).toBe("button");
+    expect(await page.locator("video").count()).toBe(0);
+    const font = await page.evaluate(async () => {
+      await document.fonts.ready;
+      const slide = document.querySelector("[aria-roledescription=slide]");
+      return {
+        family: slide ? getComputedStyle(slide).fontFamily : "",
+        loaded: document.fonts.check('16px "Inter Variable"'),
+      };
+    });
+    expect(font.family).toContain("Inter Variable");
+    expect(font.loaded).toBe(true);
+
+    await play.click();
+    const dialog = page.getByRole("dialog", { name: "Product demo" });
+    await dialog.waitFor();
+    const video = dialog.locator("video");
+    await video.waitFor();
+    expect(await video.evaluate((element) => element === document.activeElement)).toBe(true);
+
+    // While the overlay is open, Space and ArrowRight stay with the video instead of changing slides.
+    await page.keyboard.press("Space");
+    await page.keyboard.press("ArrowRight");
+    expect(await page.evaluate(() => location.hash)).toBe("#/demo");
+
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.locator("video").count()).toBe(0);
+    expect(await play.evaluate((element) => element === document.activeElement)).toBe(true);
+
+    // Ending playback returns to the resting trigger so ArrowRight advances cleanly.
+    await play.click();
+    await video.waitFor();
+    await video.evaluate((element) => {
+      element.dispatchEvent(new Event("ended"));
+    });
+    await expect.poll(() => page.locator("video").count()).toBe(0);
+    expect(await play.evaluate((element) => element === document.activeElement)).toBe(true);
+
+    await page.keyboard.press("ArrowRight");
+    await at(page, "#/raw");
+    await page.close();
+  });
+
+  it("leaves media keys to a focused raw <video> on a blank slide", async () => {
+    const page = await browser.newPage();
+    await page.goto(`${mediaSite}#/raw`);
+    const slide = page.locator("[aria-roledescription=slide]");
+    await slide.waitFor();
+    expect(await slide.getAttribute("data-layout")).toBe("blank");
+
+    const video = slide.locator("video");
+    await video.focus();
+    await page.keyboard.press("Space");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowLeft");
+    expect(await page.evaluate(() => location.hash)).toBe("#/raw");
+    await page.close();
   });
 });
