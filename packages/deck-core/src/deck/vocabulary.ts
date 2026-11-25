@@ -74,6 +74,12 @@ export const COMPONENTS: readonly DeckComponent[] = [
     summary:
       "Renders a quiet Fuse play button on the slide (showing `title` inside the button when given), and lazily loads and expands the video edge-to-edge on the canvas when pressed. Press Escape or wait for the video to end to return to the slide. Import the video before using it (import demo from '../assets/demo.mp4'), so the build bundles it. Accepts optional title, poster, captions, loop and muted props.",
   },
+  {
+    name: "Split",
+    usage: '<Split ratio="2:3"><div>…</div><div>…</div></Split>',
+    summary:
+      "Places two blocks side by side across the remaining height of the slide, for pairing text or metrics with a Fuse chart, image or <Video>. Optional ratio is 1:1, 2:3, 3:2, 1:2 or 2:1, defaulting to 1:1. Optional align is stretch, center or start, defaulting to stretch.",
+  },
 ];
 
 /**
