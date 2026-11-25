@@ -19,6 +19,11 @@
  * Save on a second quit writes the draft. It checks that the
  * app exited 0, the backend is gone, and the page made no call main had stopped answering.
  *
+ * Before the app starts, it runs the packaged MCP relay the way an agent session runs it: the app's
+ * executable with `ELECTRON_RUN_AS_NODE=1`, an empty PATH and the relay's endpoint and token. The
+ * relay forwards an initialize to a mock endpoint on 127.0.0.1 with the token, writes the answer
+ * to stdout, and exits 0 once its stdin ends.
+ *
  * Usage: node scripts/packaged-smoke.ts (after `package`)
  */
 
@@ -30,7 +35,9 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import { spawn } from "node:child_process";
 import type { ChildProcess as NodeChildProcess } from "node:child_process";
+import { createServer } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { _electron } from "playwright";
@@ -56,6 +63,93 @@ const BACKEND_ENTRY = path.join(
   "server",
   "bin.mjs"
 );
+
+/** The MCP relay inside the copied app's resources. */
+const RELAY_ENTRY = path.join(
+  "backend",
+  "node_modules",
+  "@elmeragroup",
+  "fuse-deck-studio",
+  "dist",
+  "relay",
+  "bin.mjs"
+);
+
+/** The token the smoke hands the relay, which the mock endpoint expects. */
+const RELAY_TOKEN = "packaged-smoke-token";
+
+/** The initialize the relay forwards, and the answer the mock endpoint gives it. */
+const RELAY_INITIALIZE = JSON.stringify({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "smoke", version: "1" } },
+});
+const RELAY_ANSWER = JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: "2025-11-25" } });
+
+/**
+ * Run the packaged relay on the app's executable against a mock endpoint, as an agent session runs
+ * it, and check one round trip.
+ *
+ * @returns Null when the relay forwarded the initialize with the token and relayed the answer, or
+ *   what went wrong.
+ */
+async function relayRoundTrip(executable: string, relay: string): Promise<string | null> {
+  const seen: string[] = [];
+  const server = createServer((request, response) => {
+    seen.push(request.headers.authorization ?? "");
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(RELAY_ANSWER);
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = Schema.decodeUnknownSync(Schema.Struct({ port: Schema.Finite }))(server.address()).port;
+  try {
+    const child = spawn(executable, [relay], {
+      env: {
+        PATH: "",
+        ELECTRON_RUN_AS_NODE: "1",
+        FUSE_DECK_MCP_ENDPOINT: `http://127.0.0.1:${String(port)}/mcp`,
+        FUSE_DECK_MCP_AUTHORIZATION: `Bearer ${RELAY_TOKEN}`,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    console.log(`$ ${executable} ${relay}  (pid ${String(child.pid)}, ELECTRON_RUN_AS_NODE=1, PATH empty)`);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.includes("\n")) {
+        child.stdin.end();
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    const code = await new Promise<number | null>((resolve) => {
+      child.on("exit", resolve);
+      child.stdin.write(`${RELAY_INITIALIZE}\n`);
+    });
+    console.log(`relay exited ${String(code)}\n[stdout]\n${stdout}[stderr]\n${stderr}`);
+    if (code !== 0) {
+      return `The packaged relay exited ${String(code)}: ${stderr}`;
+    }
+    if (stdout !== `${RELAY_ANSWER}\n`) {
+      return `The packaged relay wrote ${JSON.stringify(stdout)}, not the endpoint's answer.`;
+    }
+    if (seen.join(",") !== `Bearer ${RELAY_TOKEN}`) {
+      return `The endpoint saw ${JSON.stringify(seen)}, not one request with the relay's token.`;
+    }
+    return null;
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+}
 
 /** The fixture deck's title, which names the preview frame. */
 const DECK_TITLE = "Studio smoke";
@@ -136,6 +230,13 @@ const smoke = Effect.gen(function* () {
   }
   yield* fs.copy(fixtureDeck, deck);
   const executable = path.join(app, "Contents", "MacOS", PRODUCT_NAME);
+  yield* Effect.promise(() =>
+    relayRoundTrip(executable, path.join(app, "Contents", "Resources", RELAY_ENTRY))
+  ).pipe(
+    Effect.flatMap((failure) =>
+      failure === null ? Effect.void : Effect.fail(new SmokeFailed({ message: failure }))
+    )
+  );
   yield* Console.log(`Launching ${executable}\n  deck ${deck}\n  PATH=/usr/bin:/bin, cwd ${sandbox}`);
 
   const { electronApp, main } = yield* Effect.acquireRelease(
@@ -315,7 +416,7 @@ const smoke = Effect.gen(function* () {
     return yield* new SmokeFailed({ message: "The app did not report the backend's exit on quit." });
   }
   yield* Console.log(
-    "Packaged smoke passed: the copied app started with a bare PATH, ran the studio backend on its own executable, framed the deck from 127.0.0.1, rendered the slide's Fuse Button, recovered from a killed backend with the unsaved draft kept, refused to present another port, presented the current slide fullscreen and left on Escape, asked about the draft on quit, saved it, and quit with exit 0 after its backend exited."
+    "Packaged smoke passed: the packaged MCP relay round-tripped on the app's executable with an empty PATH, the copied app started with a bare PATH, ran the studio backend on its own executable, framed the deck from 127.0.0.1, rendered the slide's Fuse Button, recovered from a killed backend with the unsaved draft kept, refused to present another port, presented the current slide fullscreen and left on Escape, asked about the draft on quit, saved it, and quit with exit 0 after its backend exited."
   );
 }).pipe(Effect.scoped);
 

@@ -178,7 +178,9 @@
         "apps/desktop/src/app/DesktopLifecycle.ts",
         "apps/desktop/src/app/DesktopShutdown.ts",
         "apps/desktop/src/app/DesktopState.ts",
-        "apps/desktop/src/app/stdioErrors.ts"
+        "apps/desktop/src/app/stdioErrors.ts",
+        "apps/studio/src/relay/AcpMcpStdioBridge.ts",
+        "apps/studio/src/relay/mcpResponsePayloads.ts"
       ],
       "rules": {
         "effecttsgo/lazy-effect": "off",

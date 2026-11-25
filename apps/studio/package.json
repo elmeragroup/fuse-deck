@@ -12,7 +12,9 @@
   },
   "files": [
     "dist/server",
-    "dist/runtime"
+    "dist/relay",
+    "dist/runtime",
+    "dist/skill"
   ],
   "scripts": {
     "build": "rm -rf dist && tsdown && vite build",

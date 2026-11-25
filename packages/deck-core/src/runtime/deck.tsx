@@ -58,9 +58,15 @@ type Source = "navigation" | "address";
  * studio asks.
  */
 export function Deck({ deck }: { readonly deck: LoadedDeck }) {
-  const [current, setCurrent] = useState<{ readonly position: Position; readonly source: Source }>(() => ({
+  const [current, setCurrent] = useState<{
+    readonly position: Position;
+    readonly source: Source;
+    /** The studio request this position answers, or null for a move of the user's or the address's. */
+    readonly requestId: string | null;
+  }>(() => ({
     position: fromHash(location.hash, deck.slides),
     source: "address",
+    requestId: null,
   }));
   const { position } = current;
   // The position the latest key press asked for, which a pending transition has not committed yet.
@@ -71,22 +77,24 @@ export function Deck({ deck }: { readonly deck: LoadedDeck }) {
     committed.current = position;
   }, [position]);
 
-  // After each committed change, and once after every load.
+  // After each committed change, and once after every load. A position the studio asked for is
+  // reported under its request id, even when it was already the position shown.
+  const { requestId } = current;
   useEffect(() => {
     const parent = bridgeParent(deck.embedder);
     if (parent !== null) {
-      reportPosition(parent, position, deck.slides);
+      reportPosition(parent, position, deck.slides, requestId);
     }
-  }, [deck.embedder, position, deck.slides]);
+  }, [deck.embedder, position, deck.slides, requestId]);
 
   useEffect(() => {
-    const go = (next: Position, source: Source) => {
+    const go = (next: Position, source: Source, requestId: string | null = null) => {
       target.current = next;
       if (next.slide === committed.current.slide) {
-        setCurrent({ position: next, source });
+        setCurrent({ position: next, source, requestId });
       } else {
         startTransition(() => {
-          setCurrent({ position: next, source });
+          setCurrent({ position: next, source, requestId });
         });
       }
     };
@@ -118,7 +126,7 @@ export function Deck({ deck }: { readonly deck: LoadedDeck }) {
     const onMessage = (event: MessageEvent) => {
       const next = parent === null ? null : requestedPosition(parent, event, deck.slides);
       if (next !== null) {
-        go(next, "navigation");
+        go(next.position, "navigation", next.requestId);
       }
     };
     window.addEventListener("keydown", onKey);

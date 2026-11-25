@@ -58,6 +58,9 @@ export const SOCKET_PATH = "/ws";
 /** The path that tells main the open deck's address. */
 export const DECK_PATH = "/api/deck";
 
+/** The deck tools' MCP endpoint, which only an agent session's relay reaches. */
+export const MCP_PATH = "/mcp";
+
 /** The body of a `POST /api/session`. */
 export const SessionRequest = Schema.Struct({ bootstrap: Schema.NonEmptyString });
 

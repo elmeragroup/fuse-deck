@@ -25,6 +25,7 @@ import { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
 import { OpenRequestId } from "../src/contract/studio-rpc.ts";
 import type { DeckChanged, StudioState } from "../src/contract/studio-rpc.ts";
 import { DeckScopes } from "../src/server/deck-scopes.ts";
+import { McpTokens } from "../src/server/mcp-tokens.ts";
 import { RecentDecks } from "../src/server/recent-decks.ts";
 import { mockAgentChats, writeMockSettings } from "./agent.ts";
 import { DECK_A, DECK_B, DECK_CACHE, DECK_RUNTIME, writeDeck } from "./decks.ts";
@@ -55,7 +56,12 @@ const setup = Effect.fn("setup")(function* (
       runtimeRoot: DECK_RUNTIME,
       cacheRoot: DECK_CACHE,
       drainTimeout,
-    }).pipe(Layer.provideMerge(recentDecks(userData)), Layer.provide(mockAgentChats(userData)))
+      goDeadline: Duration.seconds(10),
+    }).pipe(
+      Layer.provideMerge(recentDecks(userData)),
+      Layer.provide(mockAgentChats(userData)),
+      Layer.provideMerge(McpTokens.layer)
+    )
   );
   const scopes = Context.get(services, DeckScopes);
   const recent = Context.get(services, RecentDecks);

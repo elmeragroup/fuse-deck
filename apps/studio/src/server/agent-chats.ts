@@ -29,6 +29,15 @@
  *
  * The process group gets SIGTERM, then SIGKILL after `KILL_GRACE`, when its session ends, which
  * effect's child-process spawner does for a detached child as its scope closes.
+ *
+ * With an MCP relay configured, each session gets the deck tools: `session/new` names the relay as
+ * a stdio MCP server, with the backend's `/mcp` address and a token `McpTokens` minted for this
+ * session and deck. The token is in the relay's environment only, never the agent's own, and the
+ * protocol log writes it as `<mcp-token>`. It is revoked as the session's scope closes, so a failed
+ * setup, the agent's exit, a closed connection and the deck's close all revoke it; Stop does not.
+ * The tool calls a session makes run in the chat, and only from the moment a turn's prompt goes out
+ * until Stop or the turn's end: Stop interrupts the running ones and refuses new ones, and the turn
+ * ends only once they have settled, refusing new ones while it waits.
  */
 
 import * as Context from "effect/Context";
@@ -36,12 +45,15 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FiberHandle from "effect/FiberHandle";
+import * as FiberSet from "effect/FiberSet";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -66,19 +78,43 @@ import type {
   PromptInput,
   ViewContext,
 } from "../contract/agent-chat.ts";
+import type { ScopeId } from "../contract/studio-rpc.ts";
+import {
+  RELAY_AUTHORIZATION_VARIABLE,
+  RELAY_ENDPOINT_VARIABLE,
+  RELAY_LOG_VARIABLE,
+} from "../relay/relay-environment.ts";
 import { AgentLaunch } from "./agent-launch.ts";
 import type { AgentCommand } from "./agent-launch.ts";
 import { applySessionUpdate, permissionEntry, settlePermission } from "./chat-entries.ts";
 import { diffSnapshots, readDeckSnapshot } from "./deck-snapshot.ts";
 import type { DeckSnapshot } from "./deck-snapshot.ts";
+import { McpTokens } from "./mcp-tokens.ts";
+import type { MintedToken } from "./mcp-tokens.ts";
 
 /** How long after Stop the agent may take to end its turn before its process group is stopped. */
 export const STOP_DEADLINE = Duration.seconds(15);
+
+/** How the agent reaches the deck tools: the relay command and the backend's `/mcp`. */
+export type McpRelay = {
+  /** The relay's executable, an absolute path: the backend's own Node. */
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+  /** The relay's environment besides the endpoint and the token. */
+  readonly env: Readonly<Record<string, string>>;
+  /** The backend's `/mcp` address. */
+  readonly endpoint: string;
+};
+
+/** The name the deck tools' MCP server goes by, which prefixes their names in the agent. */
+export const MCP_SERVER_NAME = "fuse-deck";
 
 /** What the chats need from the host. */
 export type AgentChatsConfig = {
   /** How long after Stop the agent may take to end its turn; `STOP_DEADLINE` in the app. */
   readonly stopDeadline: Duration.Duration;
+  /** The relay to the deck tools, or none to give the agent no deck tools. */
+  readonly mcpRelay: Option.Option<McpRelay>;
 };
 
 /** How long the agent's process group gets between SIGTERM and SIGKILL. */
@@ -145,6 +181,11 @@ const encodeSessionSettings = Schema.encodeEffect(
 /** The ACP `clientInfo` the studio sends. */
 const CLIENT_INFO = { name: "fuse-deck-studio", version: "0.0.0" };
 
+/** A deck tool call that the chat would not run: its session ended, or Stop is under way. */
+export class ToolCallRefused extends Schema.TaggedError<ToolCallRefused>()("ToolCallRefused", {
+  message: Schema.String,
+}) {}
+
 /** The agent could not be started or set up. */
 class AgentStartFailed extends Schema.TaggedError<AgentStartFailed>()("AgentStartFailed", {
   message: Schema.String,
@@ -164,11 +205,20 @@ export type AgentChat = {
   readonly changes: Effect.Effect<ObservedChanges>;
   /** End the agent and close the chat; the deck is closing. */
   readonly end: Effect.Effect<void>;
+  /**
+   * Run a deck tool call the session `sessionKey` made, while a turn runs: not after that session
+   * ended, during Stop, or between turns. Stop interrupts it, and the turn ends only once it has
+   * settled.
+   */
+  readonly toolCall: <A, E, R>(
+    sessionKey: string,
+    call: Effect.Effect<A, E, R>
+  ) => Effect.Effect<A, E | ToolCallRefused, R>;
 };
 
 /** The deck a chat belongs to. */
 export type ChatDeck = {
-  readonly scopeId: string;
+  readonly scopeId: ScopeId;
   readonly files: DeckFiles["Service"];
 };
 
@@ -178,6 +228,8 @@ type LiveSession = {
   readonly acp: AcpClient.AcpClient["Service"];
   readonly sessionId: string;
   readonly embeddedContext: boolean;
+  /** The session's MCP token's key in `McpTokens`, or none without a relay. */
+  readonly mcpSession: Option.Option<string>;
   /** Completes with the reason once the process exits or its connection closes. */
   readonly ended: Deferred.Deferred<string>;
 };
@@ -200,7 +252,7 @@ export class AgentChats extends Context.Service<
       AgentChats,
       Effect.gen(function* () {
         const services = yield* Effect.context<
-          AgentLaunch | ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+          AgentLaunch | McpTokens | ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
         >();
         return AgentChats.of({
           make: (deck) => makeChat(deck, config).pipe(Effect.provide(services)),
@@ -211,6 +263,7 @@ export class AgentChats extends Context.Service<
 
 const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config: AgentChatsConfig) {
   const launch = yield* AgentLaunch;
+  const tokens = yield* McpTokens;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fs = yield* FileSystem.FileSystem;
   const chatScope = yield* Scope.Scope;
@@ -227,12 +280,25 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
   const turns = yield* Semaphore.make(1);
   const turnFiber = yield* FiberHandle.make<void, never>();
   const stopWatch = yield* FiberHandle.make<void, never>();
+  // The deck tool calls the agent makes, which Stop interrupts and the end of a turn waits for.
+  const toolCalls = yield* FiberSet.make<unknown, unknown>();
   const pending = new Map<string, Deferred.Deferred<PermissionOutcome>>();
   let live: LiveSession | undefined;
   let lastTurn: { readonly turn: number; readonly snapshot: DeckSnapshot } | undefined;
   let turnCount = 0;
   // Whether the running turn's prompt went out; before then, Stop cancels the turn's own fiber.
   let prompted = false;
+  // Whether the session's deck tool calls are admitted: from the prompt's dispatch until Stop or
+  // the turn's end. It changes only under `admission`, which a call holds while it is checked and
+  // registered in `toolCalls`, so Stop and the turn's end either precede a call or cancel it. A
+  // lock of its own: `end` and Stop hold `turns` while they wait for the turn's fiber to end.
+  const admission = yield* Semaphore.make(1);
+  let admitting = false;
+  const closeAdmission = admission.withPermits(1)(
+    Effect.sync(() => {
+      admitting = false;
+    })
+  );
   let entryCount = 0;
   const nextId = () => {
     entryCount += 1;
@@ -375,12 +441,22 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
         Effect.flatMap((reason) => Deferred.succeed(ended, withStderr(reason))),
         Effect.forkIn(scope)
       );
+      // Minted for this session, and revoked as its scope closes, however the session ends.
+      const minted = yield* Option.match(config.mcpRelay, {
+        onNone: () => Effect.succeed(Option.none<MintedToken>()),
+        onSome: () =>
+          tokens.mint(deck.scopeId).pipe(
+            Effect.tap((token) => Scope.addFinalizer(scope, tokens.revokeSession(token.caller.sessionKey))),
+            Effect.asSome
+          ),
+      });
+      const secrets = Option.toArray(Option.map(minted, (token) => Redacted.value(token.token)));
       const generation = { value: Option.none<1 | 2>() };
       const context = yield* Layer.buildWithScope(
         AcpClient.layerChildProcess(handle, {
           logIncoming: true,
           logOutgoing: Option.isSome(command.protocolLog),
-          logger: protocolLogger(command.protocolLog, generation, fs),
+          logger: protocolLogger(command.protocolLog, generation, fs, secrets),
           onTermination: (error) =>
             Deferred.succeed(ended, `The connection to the agent closed: ${error.message}`).pipe(
               Effect.asVoid
@@ -399,11 +475,18 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
           clientInfo: CLIENT_INFO,
         })
         .pipe(Effect.mapError(startFailed("The agent's initialize")));
+      const mcpServers = Option.match(
+        Option.zipWith(config.mcpRelay, minted, (relay, token) => relayServer(relay, token, command.mcpLog)),
+        {
+          onNone: () => [],
+          onSome: (server) => [server],
+        }
+      );
       const created = yield* acp.agent
         .createSession({
           cwd: sessionDirectory,
           additionalDirectories: [root],
-          mcpServers: [],
+          mcpServers,
           _meta: {
             systemPrompt: { append: deckSystemPrompt(root) },
             claudeCode: { options: CLAUDE_CODE_OPTIONS },
@@ -424,6 +507,7 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
         acp,
         sessionId,
         embeddedContext: initialized.agentCapabilities?.promptCapabilities?.embeddedContext === true,
+        mcpSession: Option.map(minted, (token) => token.caller.sessionKey),
         ended,
       };
       const agent = initialized.agentInfo;
@@ -529,7 +613,12 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
       const { text } = input;
       const session = yield* ensureSession;
       const blocks = yield* promptBlocks(text, view, session.embeddedContext);
-      prompted = true;
+      yield* admission.withPermits(1)(
+        Effect.sync(() => {
+          prompted = true;
+          admitting = true;
+        })
+      );
       const response = yield* session.acp.agent.prompt({ sessionId: session.sessionId, prompt: blocks }).pipe(
         Effect.mapError((error) => new AgentStartFailed({ message: error.message })),
         Effect.raceFirst(
@@ -550,7 +639,11 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
     // Without the turn lock: `end` holds it while it interrupts this fiber.
     Effect.ensuring(
       Effect.gen(function* () {
+        // No call starts while the turn drains the ones it admitted.
+        yield* closeAdmission;
         yield* withdrawAll("The turn ended.");
+        // Source unlocks only once no deck tool call of the turn can still write.
+        yield* FiberSet.awaitEmpty(toolCalls);
         yield* FiberHandle.clear(stopWatch);
         yield* modify((current) => ({ ...current, turn: "Idle" }));
       })
@@ -588,6 +681,8 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
       if (!stopping) {
         return;
       }
+      yield* closeAdmission;
+      yield* FiberSet.clear(toolCalls);
       const session = live;
       if (session === undefined || !prompted) {
         // Still reading the deck or starting the agent: the turn's fiber is interrupted, which
@@ -642,12 +737,43 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
         if (live !== undefined) {
           yield* endSession(live, "The deck closed.");
         }
+        yield* FiberSet.clear(toolCalls);
         yield* FiberHandle.clear(turnFiber);
         yield* FiberHandle.clear(stopWatch);
       })
     );
   });
   yield* Effect.addFinalizer(() => end);
+
+  const toolCall = Effect.fnUntraced(function* <A, E, R>(sessionKey: string, call: Effect.Effect<A, E, R>) {
+    // Admitted and registered under the admission lock, so Stop and the turn's end run wholly
+    // before or after it.
+    const fiber = yield* admission.withPermits(1)(
+      Effect.gen(function* () {
+        const session = live;
+        const current = yield* SubscriptionRef.get(state);
+        if (
+          session === undefined ||
+          Option.getOrUndefined(session.mcpSession) !== sessionKey ||
+          (yield* Deferred.isDone(closed))
+        ) {
+          return yield* new ToolCallRefused({ message: "The agent session that made this call has ended." });
+        }
+        if (current.turn === "Stopping") {
+          return yield* new ToolCallRefused({ message: "The user stopped the turn." });
+        }
+        // A call belongs to the turn whose prompt went out; before then and once it ended, Source
+        // may be editable, or the turn's snapshot not taken.
+        if (current.turn !== "Running" || !admitting) {
+          return yield* new ToolCallRefused({
+            message: "No turn is running, so the agent may not use the deck tools.",
+          });
+        }
+        return yield* FiberSet.run(toolCalls, call);
+      })
+    );
+    return yield* Fiber.join(fiber).pipe(Effect.onInterrupt(() => Fiber.interrupt(fiber)));
+  });
 
   return {
     state: SubscriptionRef.changes(state).pipe(
@@ -661,6 +787,7 @@ const makeChat = Effect.fn("AgentChats.make")(function* (deck: ChatDeck, config:
     decide,
     changes,
     end,
+    toolCall,
   } satisfies AgentChat;
 });
 
@@ -701,19 +828,24 @@ const askingMode = Effect.fn("AgentChat.askingMode")(function* (
 /**
  * The ACP logger: it notes the generation from the first response the agent sends, which answers
  * `initialize` (an ACP v2 response carries `info`, as effect-acp decides), and appends each message
- * to the protocol log when one is set, as `incoming` or `outgoing`, a tab and the JSON line.
+ * to the protocol log when one is set, as `incoming` or `outgoing`, a tab and the JSON line. Each of
+ * `secrets` is written as `<mcp-token>`.
  */
 function protocolLogger(
   protocolLog: Option.Option<string>,
   generation: { value: Option.Option<1 | 2> },
-  fs: FileSystem.FileSystem
+  fs: FileSystem.FileSystem,
+  secrets: ReadonlyArray<string>
 ) {
   return (event: AcpProtocolLogEvent): Effect.Effect<void> => {
     const payload = decodeLine(event.payload);
     if (event.stage !== "raw" || Option.isNone(payload)) {
       return Effect.void;
     }
-    const line = payload.value.trim();
+    const line = secrets.reduce(
+      (text, secret) => text.replaceAll(secret, "<mcp-token>"),
+      payload.value.trim()
+    );
     return Effect.gen(function* () {
       if (Option.isNone(generation.value) && event.direction === "incoming") {
         const response = decodeResponse(line);
@@ -730,6 +862,22 @@ function protocolLogger(
 }
 
 const decodeLine = Schema.decodeUnknownOption(Schema.String);
+
+/** The relay as `session/new` names it: a stdio MCP server whose environment holds the token. */
+function relayServer(relay: McpRelay, minted: MintedToken, mcpLog: Option.Option<string>): Acp.McpServer {
+  const env = {
+    ...relay.env,
+    ...Option.match(mcpLog, { onNone: () => ({}), onSome: (file) => ({ [RELAY_LOG_VARIABLE]: file }) }),
+    [RELAY_ENDPOINT_VARIABLE]: relay.endpoint,
+    [RELAY_AUTHORIZATION_VARIABLE]: `Bearer ${Redacted.value(minted.token)}`,
+  };
+  return {
+    name: MCP_SERVER_NAME,
+    command: relay.command,
+    args: [...relay.args],
+    env: Object.entries(env).map(([name, value]) => ({ name, value })),
+  };
+}
 
 const decodeResponse = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ result: Schema.Record(Schema.String, Schema.Unknown) }))

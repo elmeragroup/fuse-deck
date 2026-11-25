@@ -33,6 +33,7 @@ import * as Option from "effect/Option";
 import * as RpcClient from "effect/rpc/RpcClient";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
 import * as Socket from "effect/socket/Socket";
 import * as Stream from "effect/Stream";
 
@@ -42,7 +43,7 @@ import type {
   SavedSlide,
   SlideRevision,
 } from "@elmeragroup/deck-core/deck/slide-edit";
-import type { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
+import { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
 
 import type { ChatState, ObservedChanges, PromptInput } from "../../contract/agent-chat.ts";
 import type { LeaveIntent } from "../../contract/desktop-bridge.ts";
@@ -57,6 +58,8 @@ import type {
   StudioState,
 } from "../../contract/studio-rpc.ts";
 import type { StudioHost } from "../host.ts";
+
+const decodeSlideId = Schema.decodeUnknownOption(SlideId);
 
 /** How long the client waits before the next session after one ends. */
 const RECONNECT_DELAY = Duration.millis(500);
@@ -76,6 +79,17 @@ export type PreviewPosition = {
   readonly slideId: string;
   readonly step: number;
 };
+
+/** What the agent's `view_go` asks the preview of the deck `scopeId` names. */
+export type PreviewRequest =
+  | {
+      readonly _tag: "Go";
+      readonly scopeId: ScopeId;
+      readonly requestId: string;
+      readonly slideId: string;
+      readonly step: number;
+    }
+  | { readonly _tag: "Cancel"; readonly scopeId: ScopeId; readonly requestId: string };
 
 /** The open deck's slides, in order. */
 export type SlideList = {
@@ -173,8 +187,17 @@ export type StudioClient = {
    * @returns Whether the backend moved it.
    */
   readonly moveSlide: (id: SlideId, position: MovePosition) => Promise<MoveOutcome>;
-  /** Record the preview's position, if it is for the open deck's scope. */
-  readonly reportPosition: (position: PreviewPosition) => void;
+  /**
+   * Record the preview's position, if it is for the open deck's scope, and report it to the
+   * backend, where the agent's `view_current` reads it, as the answer to the go `requestId` names
+   * when it is one.
+   */
+  readonly reportPosition: (position: PreviewPosition, requestId: string | null) => void;
+  /**
+   * Call `listener` with each go the agent's `view_go` asks the preview for, and each cancel of
+   * one; returns the unsubscribe.
+   */
+  readonly onViewRequest: (listener: (request: PreviewRequest) => void) => () => void;
   /** Show `message` in the status line, which announces it. */
   readonly announce: (message: string) => void;
   /** Read a slide's source and its revision from the deck `scopeId` names. */
@@ -235,6 +258,7 @@ export function deckOf(state: StudioState): OpenDeck | null {
  */
 export function startStudioClient(host: StudioHost): StudioClient {
   const listeners = new Set<() => void>();
+  const viewListeners = new Set<(request: PreviewRequest) => void>();
   let snapshot: StudioSnapshot = {
     connection: { _tag: "Connecting" },
     slides: null,
@@ -373,6 +397,19 @@ export function startStudioClient(host: StudioHost): StudioClient {
                 update({ diskChange: { scopeId, serial: changeSerial, paths } });
               }
               return refreshSlides(client, scopeId);
+            })
+          ),
+          Effect.ignore
+        ),
+        // The agent's go requests, which the preview carries out.
+        client["view.requests"]({ scopeId }).pipe(
+          Stream.runForEach((request) =>
+            Effect.sync(() => {
+              if (tracked === scopeId) {
+                for (const listener of viewListeners) {
+                  listener({ ...request, scopeId });
+                }
+              }
             })
           ),
           Effect.ignore
@@ -652,10 +689,28 @@ export function startStudioClient(host: StudioHost): StudioClient {
         )
       );
     },
-    reportPosition: (position) => {
-      if (position.scopeId === tracked) {
-        update({ position });
+    reportPosition: (position, requestId) => {
+      if (position.scopeId !== tracked) {
+        return;
       }
+      update({ position });
+      const client = rpc;
+      const slideId = decodeSlideId(position.slideId);
+      if (client !== null && Option.isSome(slideId)) {
+        run(
+          client["view.report"]({
+            scopeId: position.scopeId,
+            position: { slideId: slideId.value, step: position.step },
+            requestId,
+          }).pipe(Effect.ignore)
+        );
+      }
+    },
+    onViewRequest: (listener) => {
+      viewListeners.add(listener);
+      return () => {
+        viewListeners.delete(listener);
+      };
     },
     announce: (message) => {
       update({ notice: message });

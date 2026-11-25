@@ -871,6 +871,44 @@ describe("the agent chat", () => {
     await page.getByText("when turn 1 started").waitFor();
   });
 
+  it("says what a deck tool call does, shows its arguments, and keeps every choice inside the card", async () => {
+    await useMockAgent();
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await previewFrame(page, "Deck A", "A one");
+    await prompt(page, 'ask slides_add {"id":"agenda","after":"a-one"}');
+    const chat = page.getByRole("complementary", { name: "Agent chat" });
+    const card = chat.locator(".studio-chat-permission");
+    await card.getByRole("heading", { name: "Add slide agenda after a-one" }).waitFor();
+    await card.getByText('"after": "a-one"').waitFor();
+    const box = await card.boundingBox();
+    const outside: string[] = [];
+    for (const button of await card.getByRole("button").all()) {
+      const each = await button.boundingBox();
+      if (box === null || each === null || each.x + each.width > box.x + box.width + 0.5) {
+        outside.push(await button.innerText());
+      }
+    }
+    expect(outside).toEqual([]);
+    await card.getByRole("button", { name: "No" }).click();
+    await chat.getByRole("button", { name: "Send" }).waitFor();
+  });
+
+  it("moves the framed deck with view_go and answers with the step the deck committed", async () => {
+    await useMockAgent();
+    await writeFile(
+      path.join(deckA, "slides", "a-two.mdx"),
+      "# A two\n\n<Step>One</Step>\n\n<Step>Two</Step>\n"
+    );
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    const deck = await previewFrame(page, "Deck A", "A one");
+    // Past the slide's last step: the deck clamps it, and its report under the request's id is the answer.
+    await prompt(page, 'mcp view_go {"id":"a-two","step":9}');
+    const chat = page.getByRole("complementary", { name: "Agent chat" });
+    await chat.getByText(/"slideId":"a-two","step":2/).waitFor();
+    await deck.getByRole("region", { name: "A two" }).waitFor();
+  });
+
   it("stops a turn: the request is withdrawn and Source is editable again", async () => {
     await useMockAgent();
     const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });

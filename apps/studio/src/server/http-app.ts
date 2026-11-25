@@ -10,12 +10,18 @@
  * - `GET /api/deck` takes only a request with no Origin (main's) and the bearer. It answers the
  *   open deck's address, the only page main lets Present show. Neither the renderer nor a deck
  *   page can ask, since a browser sends an Origin with a request that carries `Authorization`.
+ * - `/mcp` takes only a request with no Origin, answering 403 to any other on every method, and
+ *   then only an agent session's MCP token, answering 401 to the session bearer and to any other
+ *   credential. The token names the session and the deck scope its calls reach. A request naming an
+ *   MCP transport session is answered 404 unless that agent session opened it. No other route
+ *   accepts an MCP token.
  *
  * CORS allows the renderer's origin alone, never `*`, and no response sets a cookie. A deck's dev
  * server is another origin, so a framed deck reaches none of these routes.
  */
 
 import * as Effect from "effect/Effect";
+import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Option from "effect/Option";
@@ -25,13 +31,19 @@ import type * as Scope from "effect/Scope";
 
 import {
   DECK_PATH,
+  MCP_PATH,
   SESSION_PATH,
   SessionRequest,
   SOCKET_PATH,
   TICKET_PATH,
 } from "../contract/studio-launch.ts";
 import { DeckScopes } from "./deck-scopes.ts";
+import { McpTokens } from "./mcp-tokens.ts";
 import { StudioAuth } from "./studio-auth.ts";
+import { CurrentCaller } from "./studio-tools.ts";
+
+/** The header that names an MCP transport session, as Node gives it, lower case. */
+const MCP_SESSION_HEADER = "mcp-session-id";
 
 /** Who may ask: no Origin at all, or exactly the renderer's. */
 type OriginPolicy = "renderer-only" | "renderer-or-none";
@@ -54,10 +66,16 @@ export const makeHttpApp = Effect.fnUntraced(function* (
     HttpServerResponse.HttpServerResponse,
     never,
     Scope.Scope | HttpServerRequest.HttpServerRequest
+  >,
+  mcp: Effect.Effect<
+    HttpServerResponse.HttpServerResponse,
+    never,
+    Scope.Scope | HttpServerRequest.HttpServerRequest | CurrentCaller
   >
 ) {
   const request = yield* HttpServerRequest.HttpServerRequest;
   const auth = yield* StudioAuth;
+  const tokens = yield* McpTokens;
   const scopes = yield* DeckScopes;
   const url = new URL(request.url, "http://127.0.0.1");
   const origin = Option.fromUndefinedOr(request.headers.origin);
@@ -169,6 +187,41 @@ export const makeHttpApp = Effect.fnUntraced(function* (
       }
       const url = yield* scopes.openUrl;
       return HttpServerResponse.jsonUnsafe({ url: Option.getOrNull(url) });
+    }
+    case MCP_PATH: {
+      // A browser page sends an Origin; the relay sends none.
+      if (Option.isSome(origin)) {
+        return refuse(403);
+      }
+      const token = bearerFrom(request.headers.authorization);
+      if (Option.isNone(token)) {
+        return refuse(401);
+      }
+      const caller = yield* tokens.resolve(token.value);
+      if (Option.isNone(caller)) {
+        return refuse(401);
+      }
+      // A transport session answers only the agent session that opened it, as unknown otherwise.
+      const transport = Option.fromUndefinedOr(request.headers[MCP_SESSION_HEADER]);
+      if (Option.isSome(transport)) {
+        const owner = yield* tokens.transportOwner(transport.value);
+        if (Option.getOrUndefined(owner) !== caller.value.sessionKey) {
+          return refuse(404);
+        }
+      }
+      const response = yield* mcp.pipe(Effect.provideService(CurrentCaller, caller.value));
+      if (Option.isNone(transport)) {
+        // The MCP server names a new transport session in a pre-response handler; this one runs
+        // after it, and records whose it is before the response goes out.
+        const sessionKey = caller.value.sessionKey;
+        yield* HttpEffect.appendPreResponseHandler((_request, outgoing) =>
+          Option.match(Option.fromUndefinedOr(outgoing.headers[MCP_SESSION_HEADER]), {
+            onNone: () => Effect.succeed(outgoing),
+            onSome: (opened) => Effect.as(tokens.bindTransport(sessionKey, opened), outgoing),
+          })
+        );
+      }
+      return response;
     }
     default:
       return refuse(404);
