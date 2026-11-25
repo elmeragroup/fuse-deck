@@ -10,6 +10,9 @@
  *
  * A deck holds no symbolic links and no special files: opening one refuses it, and every read and
  * write checks its path again, so a link made later is refused too (see `contained-file.ts`).
+ *
+ * An editor reads a slide with `openSlide`, which returns the text with the revision of its bytes,
+ * and writes it back with `replaceSlide`, which checks that revision under the lock.
  */
 
 import * as Context from "effect/Context";
@@ -19,7 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { deckEntry, describeRefusal, findDeckLink } from "./contained-file.ts";
@@ -28,6 +31,8 @@ import * as DeckManifest from "./deck-manifest.ts";
 import type { OrderPosition } from "./deck-manifest.ts";
 import { holdLock } from "./file-lock.ts";
 import type { LockFailed, LockHeld, LockNeedsRecovery } from "./file-lock.ts";
+import { SlideConflict, SlideFileMissing, SlideRevision } from "./slide-edit.ts";
+import type { OpenedSlide } from "./slide-edit.ts";
 import { SlideId, slidePath } from "./slide-id.ts";
 
 /** The manifest's file name in a deck directory. */
@@ -109,6 +114,36 @@ export class DeckFiles extends Context.Service<
 
     /** Read a slide file's text. */
     readonly readSlide: (id: SlideId) => Effect.Effect<string, DeckIoFailed>;
+
+    /**
+     * Read a slide for an editor: its text and the revision of the bytes that text came from.
+     * The order must name the slide.
+     */
+    readonly openSlide: (
+      id: SlideId
+    ) => Effect.Effect<
+      OpenedSlide,
+      DeckManifest.DeckManifestInvalid | DeckIoFailed | DeckManifest.SlideNotInDeck | SlideFileMissing
+    >;
+
+    /**
+     * Replace a slide's text, if its file still holds the bytes an editor opened. Under the deck's
+     * lock it checks that the order names the slide and that the file's bytes hash to `expected`,
+     * or that there is no file when `expected` is null. Then it writes `text` to a new temporary
+     * file beside the slide and renames that over the slide, so the slide is never half written.
+     * A file that changed fails with `SlideConflict`, which carries what the file holds now, and
+     * nothing is written.
+     *
+     * This detects a change already on disk when the check runs. A direct write that lands
+     * between the check and the rename is not detected, since other writers take no lock.
+     *
+     * @returns The revision of the bytes written.
+     */
+    readonly replaceSlide: (
+      id: SlideId,
+      expected: SlideRevision | null,
+      text: string
+    ) => Effect.Effect<SlideRevision, DeckEditError | DeckManifest.SlideNotInDeck | SlideConflict>;
 
     /**
      * Create a slide file with `text` and add the slide to the order. The file is created
@@ -197,6 +232,14 @@ function ioFailed(file: string) {
 }
 
 const isSlideId = Schema.is(SlideId);
+
+/** The revision of a slide file's bytes: their SHA-256, in hex. */
+function revisionOf(bytes: Uint8Array): SlideRevision {
+  return SlideRevision.make(createHash("sha256").update(bytes).digest("hex"));
+}
+
+const utf8 = new TextDecoder("utf-8");
+const encoder = new TextEncoder();
 
 function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Service"] {
   const manifestFile = path.join(root, MANIFEST_FILE);
@@ -287,6 +330,17 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
     return slides;
   });
 
+  /** The slide file's bytes, or none when there is no file. */
+  const readSlideBytes = (id: SlideId) =>
+    checkedPath(slideFile(id), "File").pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.succeedNone,
+          onSome: (real) => fs.readFile(real).pipe(Effect.asSome, Effect.mapError(ioFailed(slideFile(id)))),
+        })
+      )
+    );
+
   /** Run an edit with the deck's lock held from the read through the last write. */
   const locked = <A, E>(edit: Effect.Effect<A, E>) =>
     Effect.scoped(Effect.andThen(holdLock(path.join(root, LOCK_FILE)), edit)).pipe(
@@ -316,6 +370,57 @@ function makeDeckFiles(fs: FileSystem.FileSystem, root: string): DeckFiles["Serv
     }).pipe(Effect.withSpan("DeckFiles.load")),
 
     readSlide: (id) => readContained(slideFile(id)),
+
+    openSlide: Effect.fn("DeckFiles.openSlide")(function* (id) {
+      yield* Effect.fromResult(DeckManifest.requireSlide(yield* readManifest, id));
+      const bytes = yield* readSlideBytes(id);
+      if (Option.isNone(bytes)) {
+        return yield* new SlideFileMissing({
+          message: `deck.json names ${id}, but ${slidePath(id)} does not exist.`,
+          hint: `Restore the file, or run \`fuse-deck slides remove ${id}\`.`,
+          id,
+        });
+      }
+      // One read: the text and the revision come from the same bytes.
+      return { source: utf8.decode(bytes.value), revision: revisionOf(bytes.value) } satisfies OpenedSlide;
+    }),
+
+    replaceSlide: Effect.fn("DeckFiles.replaceSlide")(function* (id, expected, text) {
+      return yield* locked(
+        Effect.gen(function* () {
+          yield* Effect.fromResult(DeckManifest.requireSlide(yield* readManifest, id));
+          const bytes = yield* readSlideBytes(id);
+          const found = Option.map(bytes, revisionOf);
+          if (Option.getOrNull(found) !== expected) {
+            return yield* new SlideConflict({
+              message: Option.isNone(bytes)
+                ? `${slidePath(id)} was deleted after it was opened.`
+                : `${slidePath(id)} changed on disk after it was opened.`,
+              id,
+              disk: Option.match(bytes, {
+                onNone: () => ({ _tag: "Missing" }) as const,
+                onSome: (disk) =>
+                  ({ _tag: "Present", source: utf8.decode(disk), revision: revisionOf(disk) }) as const,
+              }),
+            });
+          }
+          // Write through the slides directory's real path, once it is inside the deck.
+          const realSlides = yield* containedSlidesDir;
+          const file = path.join(realSlides, path.basename(slideFile(id)));
+          const data = encoder.encode(text);
+          // A dot name, so the deck's watcher does not take it for a slide.
+          const temporary = path.join(realSlides, `.${id}.mdx.${randomUUID()}.tmp`);
+          yield* Effect.gen(function* () {
+            yield* fs.writeFile(temporary, data, { flag: "wx" });
+            yield* fs.rename(temporary, file);
+          }).pipe(
+            Effect.onError(() => fs.remove(temporary, { force: true }).pipe(Effect.ignore)),
+            Effect.mapError(ioFailed(file))
+          );
+          return revisionOf(data);
+        })
+      );
+    }),
 
     addSlide: Effect.fn("DeckFiles.addSlide")(function* (id, position, text) {
       return yield* locked(

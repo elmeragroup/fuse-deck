@@ -9,6 +9,8 @@
  * - `POST /api/session` trades the one-use bootstrap credential for the session bearer.
  * - `POST /api/ticket` with `Authorization: Bearer` returns a one-use WebSocket ticket.
  * - `GET /ws?ticket=` upgrades to the RPC socket.
+ * - `GET /api/deck` with `Authorization: Bearer` and no Origin tells main the open deck's address,
+ *   which is the only page main lets Present show.
  * - SIGTERM, or stdin's end, stops the backend within `BACKEND_STOP_DEADLINE`.
  */
 
@@ -53,6 +55,9 @@ export const TICKET_PATH = "/api/ticket";
 /** The RPC socket's path. */
 export const SOCKET_PATH = "/ws";
 
+/** The path that tells main the open deck's address. */
+export const DECK_PATH = "/api/deck";
+
 /** The body of a `POST /api/session`. */
 export const SessionRequest = Schema.Struct({ bootstrap: Schema.NonEmptyString });
 
@@ -65,6 +70,9 @@ export const TicketResponse = Schema.Struct({
   /** How long the ticket is good for, from its issue. */
   expiresInMillis: Schema.Int,
 });
+
+/** The answer to a `GET /api/deck`: the open deck's address, or null while no deck is open. */
+export const DeckResponse = Schema.Struct({ url: Schema.NullOr(Schema.String) });
 
 /** Where the renderer reaches the backend: its address and the session bearer. */
 export const BackendConnection = Schema.Struct({

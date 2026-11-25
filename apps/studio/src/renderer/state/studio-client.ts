@@ -12,7 +12,10 @@
  * is opening (the state names its id) is waited for, one it settled is cleared, and any other goes
  * again, so a request survives a dropped connection and a restarted backend together. With no
  * request, a backend that came back without the last deck opens it again, and one that has a deck
- * open, after the window reloads, keeps it.
+ * open, after the window reloads, keeps it. While it
+ * opens that deck again, the snapshot names it in `reopening`, so the workspace and its draft stay
+ * until the deck is open again. A reopen that failed stays named in `reopenFailed` until the user
+ * retries it or lets the deck go, so the workspace can keep a draft with edits meanwhile.
  * Everything about an open deck is keyed by its scope id, and nothing from another scope lands.
  */
 
@@ -33,11 +36,17 @@ import * as Schedule from "effect/Schedule";
 import * as Socket from "effect/socket/Socket";
 import * as Stream from "effect/Stream";
 
+import type {
+  DiskSlide,
+  OpenedSlide,
+  SavedSlide,
+  SlideRevision,
+} from "@elmeragroup/deck-core/deck/slide-edit";
 import type { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
 
+import type { LeaveIntent } from "../../contract/desktop-bridge.ts";
 import { SOCKET_PATH, TICKET_PATH, TicketResponse } from "../../contract/studio-launch.ts";
-import { StudioRpcs } from "../../contract/studio-rpc.ts";
-import { OpenRequestId } from "../../contract/studio-rpc.ts";
+import { OpenRequestId, StudioRpcs } from "../../contract/studio-rpc.ts";
 import type {
   MovePosition,
   OpenDeck,
@@ -73,15 +82,60 @@ export type SlideList = {
   readonly slides: ReadonlyArray<SlideSummary>;
 };
 
+/** The files the open deck's watcher last reported changed. Each report has its own serial. */
+export type DiskChange = {
+  readonly scopeId: ScopeId;
+  readonly serial: number;
+  /** Paths relative to the deck directory, such as `slides/intro.mdx`. */
+  readonly paths: ReadonlyArray<string>;
+};
+
 /** Everything the views read. */
 export type StudioSnapshot = {
   readonly connection: Connection;
   readonly slides: SlideList | null;
+  /** The last change on disk the open deck reported, or null before the first. */
+  readonly diskChange: DiskChange | null;
   readonly position: PreviewPosition | null;
   readonly recent: ReadonlyArray<RecentDeck>;
   /** The last failure or confirmation to announce, or null. */
   readonly notice: string | null;
+  /**
+   * The deck directory the client is opening again because the backend came back without it,
+   * such as after a restart, or null. It clears once that deck is open or its reopen failed.
+   */
+  readonly reopening: string | null;
+  /**
+   * The deck the client could not open again, and why, or null. The workspace keeps its draft
+   * while this names its deck, until the user retries the reopen or lets the deck go.
+   */
+  readonly reopenFailed: ReopenFailure | null;
+  /** Counts the sessions that reached the backend, so a view can tell a reconnect from a render. */
+  readonly session: number;
 };
+
+/** A deck the client opened again after the backend came back without it, and the open failed. */
+export type ReopenFailure = {
+  /** The deck directory. */
+  readonly root: string;
+  readonly message: string;
+};
+
+/** How opening a slide's source ended. */
+export type OpenOutcome =
+  | { readonly _tag: "Opened"; readonly slide: OpenedSlide }
+  /** The order names the slide but its file is gone, or the order no longer names it. */
+  | { readonly _tag: "Gone"; readonly message: string }
+  | { readonly _tag: "Failed"; readonly message: string };
+
+/** How saving a slide's source ended. */
+export type SaveOutcome =
+  | { readonly _tag: "Saved"; readonly saved: SavedSlide }
+  /** The file changed or was deleted since it was opened; nothing was written. */
+  | { readonly _tag: "Conflict"; readonly disk: DiskSlide }
+  /** The deck's order no longer names the slide; nothing was written. */
+  | { readonly _tag: "NotInDeck"; readonly message: string }
+  | { readonly _tag: "Failed"; readonly message: string };
 
 /** How a slide move ended. */
 export type MoveOutcome = { readonly _tag: "Moved" } | { readonly _tag: "NotMoved" };
@@ -97,6 +151,10 @@ export type StudioClient = {
   readonly pickDeck: () => void;
   /** Close the open deck. */
   readonly closeDeck: () => void;
+  /** Open again the deck `reopenFailed` names. */
+  readonly retryReopen: () => void;
+  /** Let go of the deck `reopenFailed` names, and of the workspace kept for it. */
+  readonly dismissReopenFailure: () => void;
   /**
    * Move a slide of the open deck. The slide list shows the new order once the edit reaches the
    * disk, through the same report as any other edit.
@@ -106,12 +164,40 @@ export type StudioClient = {
   readonly moveSlide: (id: SlideId, position: MovePosition) => Promise<MoveOutcome>;
   /** Record the preview's position, if it is for the open deck's scope. */
   readonly reportPosition: (position: PreviewPosition) => void;
+  /** Show `message` in the status line, which announces it. */
+  readonly announce: (message: string) => void;
+  /** Read a slide's source and its revision from the deck `scopeId` names. */
+  readonly openSlide: (scopeId: ScopeId, id: SlideId) => Promise<OpenOutcome>;
+  /**
+   * Save a slide's source in the deck `scopeId` names, over the revision the editor opened, or
+   * over no file when `expected` is null.
+   */
+  readonly saveSlide: (
+    scopeId: ScopeId,
+    id: SlideId,
+    expected: SlideRevision | null,
+    source: string
+  ) => Promise<SaveOutcome>;
+  /**
+   * Present the deck page at `url`: a fullscreen window in the desktop app, the preview frame in
+   * the browser's fullscreen otherwise.
+   */
+  readonly present: (url: string, frame: HTMLIFrameElement | null) => void;
+  /** Tell the host whether the Source tab holds a draft with edits. */
+  readonly reportUnsavedDraft: (unsaved: boolean) => void;
+  /** Call `listener` each time the host holds back a quit or a window close; returns the unsubscribe. */
+  readonly onLeaveRequest: (listener: (intent: LeaveIntent) => void) => () => void;
+  /** Go on with the quit or the window close the host held back. */
+  readonly leave: (intent: LeaveIntent) => void;
 };
 
 type StudioRpcClient = Effect.Success<ReturnType<typeof makeRpcClient>>;
 
-/** An open the user asked for: its path, and the id that the result and the backend's state name. */
-type OpenRequest = { readonly id: OpenRequestId; readonly path: string };
+/**
+ * An open the client asked for: its path, the id that the result and the backend's state name, and
+ * whether the user asked for it or the client opens the last deck again after a restart.
+ */
+type OpenRequest = { readonly id: OpenRequestId; readonly path: string; readonly kind: "User" | "Reopen" };
 
 function makeRpcClient() {
   return RpcClient.make(StudioRpcs);
@@ -133,9 +219,13 @@ export function startStudioClient(host: StudioHost): StudioClient {
   let snapshot: StudioSnapshot = {
     connection: { _tag: "Connecting" },
     slides: null,
+    diskChange: null,
     position: null,
     recent: [],
     notice: null,
+    reopening: null,
+    reopenFailed: null,
+    session: 0,
   };
   const update = (change: Partial<StudioSnapshot>) => {
     snapshot = { ...snapshot, ...change };
@@ -153,6 +243,7 @@ export function startStudioClient(host: StudioHost): StudioClient {
   let lastOpen: string | null = null;
   // The scope whose slides and position the snapshot holds.
   let tracked: ScopeId | null = null;
+  let changeSerial = 0;
 
   // Trace headers would need their own CORS allowance, and the renderer exports no traces.
   const run = <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>) =>
@@ -169,9 +260,23 @@ export function startStudioClient(host: StudioHost): StudioClient {
       onSome: (error) => error.message,
     });
 
-  const request = (path: string): OpenRequest => {
-    requested = { id: OpenRequestId.make(crypto.randomUUID()), path };
+  const request = (path: string, kind: OpenRequest["kind"]): OpenRequest => {
+    requested = { id: OpenRequestId.make(crypto.randomUUID()), path, kind };
     return requested;
+  };
+
+  /**
+   * `open` failed. It is no longer wanted, not even as the deck to reopen after a restart. A
+   * failed reopen is kept as `reopenFailed`, so the workspace can keep the draft it holds.
+   */
+  const openFailed = (open: OpenRequest, message: string) => {
+    requested = null;
+    lastOpen = null;
+    update({
+      notice: message,
+      reopening: null,
+      reopenFailed: open.kind === "Reopen" ? { root: open.path, message } : snapshot.reopenFailed,
+    });
   };
 
   /** Clear the request when `studio` names it as open, or as failed, keeping the failure's message. */
@@ -183,9 +288,7 @@ export function startStudioClient(host: StudioHost): StudioClient {
       requested = null;
       update({ notice: null });
     } else if (studio._tag === "Empty" && studio.failed?.requestId === requested.id) {
-      requested = null;
-      lastOpen = null;
-      update({ notice: studio.failed.message });
+      openFailed(requested, studio.failed.message);
     }
   };
 
@@ -194,12 +297,10 @@ export function startStudioClient(host: StudioHost): StudioClient {
     return client["deck.open"]({ path: open.path, requestId: open.id }).pipe(
       Effect.match({
         onFailure: (error) => {
-          // A deck that failed to open is no longer wanted, not even as the one to reopen after a
-          // restart. A dropped connection is not the deck's fault: the next session sends the
-          // request again.
+          // A dropped connection is not the deck's fault: the next session sends the request again.
           if (error._tag === "DeckOpenFailed" && requested?.id === open.id) {
-            requested = null;
-            lastOpen = null;
+            openFailed(open, error.message);
+            return;
           }
           update({ notice: error.message });
         },
@@ -240,7 +341,15 @@ export function startStudioClient(host: StudioHost): StudioClient {
    */
   const followScope = (client: StudioRpcClient, scopeId: ScopeId) =>
     client["deck.changed"]({ scopeId }).pipe(
-      Stream.runForEach(() => refreshSlides(client, scopeId)),
+      Stream.runForEach(({ paths }) =>
+        Effect.suspend(() => {
+          if (tracked === scopeId && paths.length > 0) {
+            changeSerial += 1;
+            update({ diskChange: { scopeId, serial: changeSerial, paths } });
+          }
+          return refreshSlides(client, scopeId);
+        })
+      ),
       Effect.ignore
     );
 
@@ -307,26 +416,41 @@ export function startStudioClient(host: StudioHost): StudioClient {
     };
 
     const onState = Effect.fnUntraced(function* (studio: StudioState) {
-      update({ connection: { _tag: "Connected", studio } });
+      const first = !reconciled;
       settle(studio);
       if (!reconciled) {
         reconciled = true;
         yield* reconcile(studio);
       }
-      if (studio._tag === "Open" && studio.deck.scopeId !== tracked) {
-        tracked = studio.deck.scopeId;
-        lastOpen = studio.deck.root;
-        update({ slides: null, position: null });
-        yield* FiberHandle.run(scopeWork, followScope(client, studio.deck.scopeId));
+      const opened = studio._tag === "Open" && studio.deck.scopeId !== tracked ? studio.deck : null;
+      // A backend that has no deck, while the user asked for none, lost the last one: open it again.
+      const reopen = studio._tag === "Empty" && requested === null ? lastOpen : null;
+      if (opened !== null) {
+        tracked = opened.scopeId;
+        lastOpen = opened.root;
       }
       if (studio._tag === "Empty") {
         tracked = null;
+      }
+      // One update, so no view sees the empty state without the reopen that follows it.
+      const newScope = opened !== null || studio._tag === "Empty";
+      update({
+        connection: { _tag: "Connected", studio },
+        slides: newScope ? null : snapshot.slides,
+        position: newScope ? null : snapshot.position,
+        reopening: studio._tag === "Open" ? null : (reopen ?? snapshot.reopening),
+        reopenFailed: studio._tag === "Open" ? null : snapshot.reopenFailed,
+        session: first ? snapshot.session + 1 : snapshot.session,
+      });
+      if (opened !== null) {
+        yield* FiberHandle.run(scopeWork, followScope(client, opened.scopeId));
+      }
+      if (studio._tag === "Empty") {
         yield* FiberHandle.clear(scopeWork);
-        update({ slides: null, position: null });
         // The empty view lists the recent decks, the one just closed among them.
         yield* Effect.forkScoped(refreshRecent(client));
-        if (requested === null && lastOpen !== null) {
-          yield* Effect.forkScoped(send(client, request(lastOpen)));
+        if (reopen !== null) {
+          yield* Effect.forkScoped(send(client, request(reopen, "Reopen")));
         }
       }
     });
@@ -343,7 +467,7 @@ export function startStudioClient(host: StudioHost): StudioClient {
   const loop = Effect.gen(function* () {
     const initial = yield* Effect.orElseSucceed(host.initialDeck, () => Option.none());
     if (Option.isSome(initial) && requested === null) {
-      request(initial.value);
+      request(initial.value, "User");
     }
     while (true) {
       const ended = yield* Effect.exit(Effect.scoped(session));
@@ -365,13 +489,16 @@ export function startStudioClient(host: StudioHost): StudioClient {
   // the request against the state it finds.
   const openRequested = (directory: string) => {
     lastOpen = null;
-    const open = request(directory);
+    update({ reopening: null, reopenFailed: null });
+    const open = request(directory, "User");
     if (rpc === null) {
       update({ notice: `Opening ${directory} once the studio backend is connected.` });
       return;
     }
     run(send(rpc, open));
   };
+
+  const notConnected = "The studio is not connected to its backend yet.";
 
   const withClient = (action: (client: StudioRpcClient) => Effect.Effect<void>) => {
     if (rpc === null) {
@@ -415,7 +542,22 @@ export function startStudioClient(host: StudioHost): StudioClient {
       }
       requested = null;
       lastOpen = null;
+      update({ reopening: null, reopenFailed: null });
       withClient((client) => client["deck.close"]({ scopeId }).pipe(Effect.ignore));
+    },
+    retryReopen: () => {
+      const failed = snapshot.reopenFailed;
+      if (failed === null) {
+        return;
+      }
+      const open = request(failed.root, "Reopen");
+      update({ reopening: failed.root, reopenFailed: null, notice: null });
+      if (rpc !== null) {
+        run(send(rpc, open));
+      }
+    },
+    dismissReopenFailure: () => {
+      update({ reopenFailed: null });
     },
     moveSlide: (id, position) => {
       const scopeId = tracked;
@@ -447,6 +589,84 @@ export function startStudioClient(host: StudioHost): StudioClient {
       if (position.scopeId === tracked) {
         update({ position });
       }
+    },
+    announce: (message) => {
+      update({ notice: message });
+    },
+    openSlide: (scopeId, id) => {
+      const client = rpc;
+      if (client === null) {
+        return Promise.resolve({ _tag: "Failed", message: notConnected });
+      }
+      return Effect.runPromise(
+        client["slide.open"]({ scopeId, id }).pipe(
+          Effect.match({
+            onFailure: (error): OpenOutcome =>
+              error._tag === "DeckOperationFailed" &&
+              (error.reason === "SlideFileMissing" || error.reason === "SlideNotInDeck")
+                ? { _tag: "Gone", message: error.message }
+                : { _tag: "Failed", message: error.message },
+            onSuccess: (slide): OpenOutcome => ({ _tag: "Opened", slide }),
+          }),
+          Effect.catchCause((cause) =>
+            Effect.succeed<OpenOutcome>({ _tag: "Failed", message: failureText(cause) })
+          )
+        )
+      );
+    },
+    saveSlide: (scopeId, id, expected, source) => {
+      const client = rpc;
+      if (client === null) {
+        return Promise.resolve({ _tag: "Failed", message: notConnected });
+      }
+      return Effect.runPromise(
+        client["slide.save"]({ scopeId, id, expected, source }).pipe(
+          Effect.match({
+            onFailure: (error): SaveOutcome => {
+              if (error._tag === "SlideConflict") {
+                return { _tag: "Conflict", disk: error.disk };
+              }
+              if (error._tag === "DeckOperationFailed" && error.reason === "SlideNotInDeck") {
+                return { _tag: "NotInDeck", message: error.message };
+              }
+              // A stale scope, a held lock, a disk failure or a dropped connection.
+              return { _tag: "Failed", message: error.message };
+            },
+            onSuccess: (saved): SaveOutcome => ({ _tag: "Saved", saved }),
+          }),
+          Effect.catchCause((cause) =>
+            Effect.succeed<SaveOutcome>({ _tag: "Failed", message: failureText(cause) })
+          )
+        )
+      );
+    },
+    present: (url, frame) => {
+      run(
+        host.present({ url, frame }).pipe(
+          Effect.match({
+            onFailure: (error) => {
+              update({ notice: error.message });
+            },
+            onSuccess: () => undefined,
+          })
+        )
+      );
+    },
+    reportUnsavedDraft: (unsaved) => {
+      run(host.reportUnsavedDraft(unsaved).pipe(Effect.ignore));
+    },
+    onLeaveRequest: (listener) => host.onLeaveRequest(listener),
+    leave: (intent) => {
+      run(
+        host.leave(intent).pipe(
+          Effect.match({
+            onFailure: (error) => {
+              update({ notice: error.message });
+            },
+            onSuccess: () => undefined,
+          })
+        )
+      );
     },
   };
 }

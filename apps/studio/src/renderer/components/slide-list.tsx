@@ -37,9 +37,15 @@ type PendingFocus = { readonly id: SlideId; readonly index: number };
 export function SlideList({
   deck,
   onShow,
+  onOpenDeck,
+  onCloseDeck,
 }: {
   readonly deck: OpenDeck;
   readonly onShow: (slideId: SlideId) => void;
+  /** Open another deck; the workspace asks first when a draft would be dropped. */
+  readonly onOpenDeck: () => void;
+  /** Close this deck; the workspace asks first when a draft would be dropped. */
+  readonly onCloseDeck: () => void;
 }) {
   const { client, snapshot } = useStudio();
   const list = snapshot.slides?.scopeId === deck.scopeId ? snapshot.slides.slides : null;
@@ -87,10 +93,10 @@ export function SlideList({
       <Sidebar.Header className="studio-sidebar-header">
         <h1 className="studio-deck-title">{deck.title}</h1>
         <div className="studio-deck-actions">
-          <Button variant="ghost" size="sm" onClick={client.pickDeck}>
+          <Button variant="ghost" size="sm" onClick={onOpenDeck}>
             Open…
           </Button>
-          <Button variant="ghost" size="sm" onClick={client.closeDeck}>
+          <Button variant="ghost" size="sm" onClick={onCloseDeck}>
             Close
           </Button>
         </div>

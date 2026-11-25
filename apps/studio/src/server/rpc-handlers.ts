@@ -1,11 +1,15 @@
 /**
  * The renderer's RPC calls, each a thin translation onto `DeckScopes`, deck-core and
  * `RecentDecks`. Deck-core's errors cross the wire as `DeckOperationFailed`, tagged with the
- * original error's tag.
+ * original error's tag, except a save's `SlideConflict`, which crosses as itself.
  */
 
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+
+import { Bundler } from "@elmeragroup/deck-core/bundler/bundler";
+import { DeckFiles } from "@elmeragroup/deck-core/deck/deck-files";
+import { saveSlide } from "@elmeragroup/deck-core/deck/save-slide";
 
 import { DeckOperationFailed, StudioRpcs } from "../contract/studio-rpc.ts";
 import { DeckScopes } from "./deck-scopes.ts";
@@ -30,7 +34,7 @@ export const StudioRpcHandlers = StudioRpcs.toLayer(
       "deck.close": ({ scopeId }) => scopes.close(scopeId),
       "deck.changed": ({ scopeId }) => scopes.changes(scopeId),
       "slides.list": ({ scopeId }) =>
-        scopes.admit(scopeId, ({ files, bundler }) =>
+        scopes.admit(scopeId, "Read", ({ files, bundler }) =>
           Effect.gen(function* () {
             const loaded = yield* files.load;
             return yield* Effect.forEach(
@@ -47,10 +51,23 @@ export const StudioRpcHandlers = StudioRpcs.toLayer(
           }).pipe(Effect.mapError(operationFailed))
         ),
       "slides.move": ({ scopeId, id, position }) =>
-        scopes.admit(scopeId, ({ files }) =>
+        scopes.admit(scopeId, "Write", ({ files }) =>
           files
             .moveSlide(id, position)
             .pipe(Effect.mapBoth({ onSuccess: (manifest) => manifest.order, onFailure: operationFailed }))
+        ),
+      "slide.open": ({ scopeId, id }) =>
+        scopes.admit(scopeId, "Read", ({ files }) =>
+          files.openSlide(id).pipe(Effect.mapError(operationFailed))
+        ),
+      "slide.save": ({ scopeId, id, expected, source }) =>
+        scopes.admit(scopeId, "Write", ({ files, bundler }) =>
+          saveSlide(id, expected, source).pipe(
+            Effect.provideService(DeckFiles, files),
+            Effect.provideService(Bundler, bundler),
+            // A conflict crosses typed, with the disk's text, so the editor can show it.
+            Effect.mapError((error) => (error._tag === "SlideConflict" ? error : operationFailed(error)))
+          )
         ),
       "recent.list": () => recent.list,
     });

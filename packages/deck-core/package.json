@@ -14,8 +14,11 @@
     "./deck/deck-files": "./src/deck/deck-files.ts",
     "./deck/deck-manifest": "./src/deck/deck-manifest.ts",
     "./deck/describe": "./src/deck/describe.ts",
+    "./deck/line-ending": "./src/deck/line-ending.ts",
     "./deck/mdx-text": "./src/deck/mdx-text.ts",
+    "./deck/save-slide": "./src/deck/save-slide.ts",
     "./deck/scaffold": "./src/deck/scaffold.ts",
+    "./deck/slide-edit": "./src/deck/slide-edit.ts",
     "./deck/slide-id": "./src/deck/slide-id.ts",
     "./deck/vocabulary": "./src/deck/vocabulary.ts",
     "./package.json": "./package.json"

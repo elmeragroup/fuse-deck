@@ -40,6 +40,10 @@ pnpm test:packaged                                              # package, then 
 `test:packaged` packages an unsigned macOS arm64 app into `.artifacts/release`, copies it and the
 fixture deck in `test/fixtures/deck` to a temporary directory, and launches it there with
 `PATH=/usr/bin:/bin`. It passes when the frame renders the slide's Fuse Button, the window
-recovers after the test kills the backend, and the app exits 0 after its backend exits.
+recovers after the test kills the backend with an unsaved draft still in the Source tab, main
+refuses to present another 127.0.0.1 port, Present opens the second slide fullscreen in a window
+without the preload and Escape closes it, closing the window and quitting both ask about the draft
+(Cancel keeps the window and the app, Save on a quit writes the draft), and the app exits 0 after
+its backend exits.
 
 Code derived from T3 Code is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

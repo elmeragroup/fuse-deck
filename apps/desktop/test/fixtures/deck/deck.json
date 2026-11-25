@@ -3,5 +3,5 @@
   "theme": "neutral-elma-private",
   "density": "comfortable",
   "aspect": "16:9",
-  "order": ["intro"]
+  "order": ["intro", "outro"]
 }
