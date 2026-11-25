@@ -11,6 +11,7 @@ import type { ComponentType } from "react";
 
 import type { LayoutName } from "../deck/vocabulary.ts";
 import { bridgeParent, reportPosition, requestedPosition } from "./bridge.ts";
+import { ElmeraCover } from "./elmera-cover.tsx";
 import { LAYOUTS } from "./layouts.tsx";
 import type { ManifestEmbedder, MdxComponents } from "./manifest.ts";
 import { Morph } from "./morph.tsx";
@@ -21,7 +22,7 @@ import { RevealedSteps, Step } from "./step.tsx";
 import { Video } from "./video.tsx";
 
 /** The components every slide gets without an import. */
-const MDX_COMPONENTS = { Step, Morph, Video, Split } satisfies MdxComponents;
+const MDX_COMPONENTS = { Step, Morph, Video, Split, ElmeraCover } satisfies MdxComponents;
 
 /** A slide, loaded. */
 export type LoadedSlide = {
@@ -166,6 +167,10 @@ export function Deck({ deck }: { readonly deck: LoadedDeck }) {
   const scale = useSyncExternalStore(subscribeToResize, () =>
     Math.min(window.innerWidth / canvas.width, window.innerHeight / canvas.height)
   );
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    viewportRef.current?.style.setProperty("--deck-scale", String(scale));
+  }, [scale]);
   if (slide === undefined) {
     return <p className="deck-empty">The deck has no slides.</p>;
   }
@@ -173,7 +178,7 @@ export function Deck({ deck }: { readonly deck: LoadedDeck }) {
   const { Content } = slide;
 
   return (
-    <div className="deck-viewport">
+    <div ref={viewportRef} className="deck-viewport">
       <div
         className="deck-canvas"
         data-aspect={deck.aspect}

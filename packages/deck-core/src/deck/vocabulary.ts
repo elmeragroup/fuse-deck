@@ -80,6 +80,12 @@ export const COMPONENTS: readonly DeckComponent[] = [
     summary:
       "Places two blocks side by side across the remaining height of the slide, for pairing text or metrics with a Fuse chart, image or <Video>. Optional ratio is 1:1, 2:3, 3:2, 1:2 or 2:1, defaulting to 1:1. Optional align is stretch, center or start, defaulting to stretch.",
   },
+  {
+    name: "ElmeraCover",
+    usage: '<ElmeraCover background="ghost-fiber" />',
+    summary:
+      "Centers Fuse's ElmeraGroupLogo wordmark with the tagline 'Preferred by more customers. Every day.' in Inter using the active theme's neutral tokens. Pass tagline to replace or omit the line, and optional background set to 'none' or 'ghost-fiber', defaulting to 'none', for a monochrome fiber canvas behind the cover.",
+  },
 ];
 
 /**

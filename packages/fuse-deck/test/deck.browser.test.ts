@@ -406,6 +406,8 @@ describe("a built deck with video and blank slides", () => {
     fuseDeck(deck, ["slides", "add", "demo", "--layout", "center"]);
     fuseDeck(deck, ["slides", "add", "raw", "--layout", "blank"]);
     fuseDeck(deck, ["slides", "add", "chart"]);
+    fuseDeck(deck, ["slides", "add", "elmera", "--layout", "center"]);
+    fuseDeck(deck, ["slides", "add", "elmera-fiber", "--layout", "center"]);
     const deckJson = path.join(deck, "deck.json");
     const rawManifest = await readFile(deckJson, "utf8");
     await writeFile(
@@ -449,6 +451,11 @@ describe("a built deck with video and blank slides", () => {
         "</Split>",
         "",
       ].join("\n")
+    );
+    await writeFile(path.join(deck, "slides", "elmera.mdx"), "---\nlayout: center\n---\n\n<ElmeraCover />\n");
+    await writeFile(
+      path.join(deck, "slides", "elmera-fiber.mdx"),
+      '---\nlayout: center\n---\n\n<ElmeraCover background="ghost-fiber" />\n'
     );
     fuseDeck(deck, ["build"]);
     const server = await serve(path.join(deck, "dist"));
@@ -550,6 +557,56 @@ describe("a built deck with video and blank slides", () => {
     await plot.focus();
     await page.keyboard.press("ArrowLeft");
     expect(await page.evaluate(() => location.hash)).toBe("#/chart");
+    expect(errors).toEqual([]);
+    await page.close();
+  });
+
+  it("renders <ElmeraCover> with Fuse's Elmera Group logo and Inter tagline", async () => {
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${mediaSite}#/elmera`);
+    const slide = page.locator("[aria-roledescription=slide]");
+    await slide.waitFor();
+
+    const logo = slide.getByRole("img", { name: "Elmera Group" });
+    await logo.waitFor();
+    const tagline = slide.getByText("Preferred by more customers. Every day.");
+    await tagline.waitFor();
+    expect(await slide.locator("canvas").count()).toBe(0);
+    expect(await tagline.evaluate((element) => getComputedStyle(element).fontFamily)).toContain(
+      "Inter Variable"
+    );
+    expect(errors).toEqual([]);
+    await page.close();
+  });
+
+  it("renders the opt-in monochrome ghost-fiber background edge-to-edge on <ElmeraCover>", async () => {
+    const page = await browser.newPage({
+      reducedMotion: "reduce",
+      viewport: { width: 1600, height: 720 },
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${mediaSite}#/elmera-fiber`);
+    const slide = page.locator("[aria-roledescription=slide]");
+    await slide.waitFor();
+
+    await slide.getByRole("img", { name: "Elmera Group" }).waitFor();
+    const canvas = slide.locator("canvas");
+    await canvas.waitFor();
+    expect(await slide.locator("[data-background='ghost-fiber']").count()).toBeGreaterThan(0);
+    const viewportBox = await page.locator(".deck-viewport").boundingBox();
+    const slideBox = await slide.boundingBox();
+    const canvasBox = await canvas.boundingBox();
+    expect(viewportBox).not.toBeNull();
+    expect(slideBox).not.toBeNull();
+    expect(canvasBox).not.toBeNull();
+    if (viewportBox !== null && slideBox !== null && canvasBox !== null) {
+      expect(canvasBox.width).toBeGreaterThan(slideBox.width);
+      expect(Math.round(canvasBox.width)).toBe(Math.round(viewportBox.width));
+      expect(Math.round(canvasBox.height)).toBe(Math.round(viewportBox.height));
+    }
     expect(errors).toEqual([]);
     await page.close();
   });
