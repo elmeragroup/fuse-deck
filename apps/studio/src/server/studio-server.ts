@@ -31,6 +31,9 @@ import path from "node:path";
 
 import { BACKEND_STOP_DEADLINE, StudioLaunch, StudioReady } from "../contract/studio-launch.ts";
 import { StudioRpcs } from "../contract/studio-rpc.ts";
+import { AgentChats, STOP_DEADLINE } from "./agent-chats.ts";
+import { AgentLaunch } from "./agent-launch.ts";
+import type { InheritedEnvironment } from "./agent-launch.ts";
 import { DeckScopes, DRAIN_TIMEOUT } from "./deck-scopes.ts";
 import { makeHttpApp } from "./http-app.ts";
 import { RecentDecks } from "./recent-decks.ts";
@@ -49,15 +52,18 @@ const decodeLaunch = Schema.decodeUnknownEffect(Schema.fromJsonString(StudioLaun
 const encodeReady = Schema.encodeEffect(Schema.fromJsonString(StudioReady));
 
 /** The services one backend run serves with, built from its launch document. */
-function studioLayer(launch: StudioLaunch, runtimeRoot: string) {
+function studioLayer(launch: StudioLaunch, runtimeRoot: string, inherited: InheritedEnvironment) {
   const recent = RecentDecks.layer(launch.userDataDirectory);
+  const chats = AgentChats.layer({ stopDeadline: STOP_DEADLINE }).pipe(
+    Layer.provide(AgentLaunch.layer(launch.userDataDirectory, inherited))
+  );
   return Layer.mergeAll(
     DeckScopes.layer({
       embedderOrigin: launch.origin,
       runtimeRoot,
       cacheRoot: path.join(launch.userDataDirectory, "deck-cache"),
       drainTimeout: DRAIN_TIMEOUT,
-    }).pipe(Layer.provideMerge(recent)),
+    }).pipe(Layer.provideMerge(recent), Layer.provide(chats)),
     StudioAuth.layer(Redacted.make(launch.bootstrap)),
     RpcSerialization.layerJson
   ).pipe(
@@ -77,8 +83,12 @@ function studioLayer(launch: StudioLaunch, runtimeRoot: string) {
  * Run the backend until stdin closes.
  *
  * @param runtimeRoot - The deck runtime's directory, which every deck's dev server loads.
+ * @param inherited - The backend's own PATH and shell, which the agent's launch starts from.
  */
-export const runStudioServer = Effect.fn("studio.server")(function* (runtimeRoot: string) {
+export const runStudioServer = Effect.fn("studio.server")(function* (
+  runtimeRoot: string,
+  inherited: InheritedEnvironment
+) {
   const stdio = yield* Stdio.Stdio;
   const firstLine = yield* Deferred.make<string>();
   const stdinClosed = yield* Deferred.make<void>();
@@ -126,7 +136,7 @@ export const runStudioServer = Effect.fn("studio.server")(function* (runtimeRoot
     yield* Effect.logInfo("stdin closed; the studio backend stops.");
     // The server's fibers live in this inner scope, which closes before the layer's resources, the
     // HTTP server among them, are released.
-  }).pipe(Effect.scoped, Effect.provide(studioLayer(launch, runtimeRoot)));
+  }).pipe(Effect.scoped, Effect.provide(studioLayer(launch, runtimeRoot, inherited)));
 }, Effect.scoped);
 
 /**

@@ -17,7 +17,7 @@
  * Last it closes the window, which asks about the draft, and Cancel keeps it open. Then it quits the
  * app as a user does, through `app.quit()`. The page asks again: Cancel keeps the app running, and
  * Save on a second quit writes the draft. It checks that the
- * app exited 0 and the backend is gone.
+ * app exited 0, the backend is gone, and the page made no call main had stopped answering.
  *
  * Usage: node scripts/packaged-smoke.ts (after `package`)
  */
@@ -293,6 +293,10 @@ const smoke = Effect.gen(function* () {
     });
   }
   yield* Console.log(`[app output]\n${output.join("")}`);
+  // A page call main no longer answers, such as a draft report sent after Save on quit.
+  if (output.join("").includes("No handler registered")) {
+    return yield* new SmokeFailed({ message: "The page called main after main stopped answering it." });
+  }
   if (exit.code !== 0 || exit.signal !== null) {
     return yield* new SmokeFailed({
       message: `The app exited with code ${String(exit.code)} and signal ${String(exit.signal)}, not 0.`,

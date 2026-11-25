@@ -20,7 +20,10 @@ export type FuseDeckStudioBridge = {
   /** Ask the user for a deck directory with the system dialog, as a `PickedDeck`. */
   // oxlint-disable-next-line anti-slop/no-unknown-returns -- an IPC value; the renderer decodes it with PickedDeck
   readonly pickDeck: () => Promise<unknown>;
-  /** The deck to open at start, from `FUSE_DECK_STUDIO_DECK`, as a `PickedDeck`. */
+  /**
+   * The deck to open at start, from `FUSE_DECK_STUDIO_DECK`, as a `PickedDeck`. Only the first call
+   * gets it; a reloaded page gets null and keeps the deck the backend has open.
+   */
   // oxlint-disable-next-line anti-slop/no-unknown-returns -- an IPC value; the renderer decodes it with PickedDeck
   readonly initialDeck: () => Promise<unknown>;
   /**

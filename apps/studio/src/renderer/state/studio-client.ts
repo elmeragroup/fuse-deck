@@ -44,6 +44,7 @@ import type {
 } from "@elmeragroup/deck-core/deck/slide-edit";
 import type { SlideId } from "@elmeragroup/deck-core/deck/slide-id";
 
+import type { ChatState, ObservedChanges, PromptInput } from "../../contract/agent-chat.ts";
 import type { LeaveIntent } from "../../contract/desktop-bridge.ts";
 import { SOCKET_PATH, TICKET_PATH, TicketResponse } from "../../contract/studio-launch.ts";
 import { OpenRequestId, StudioRpcs } from "../../contract/studio-rpc.ts";
@@ -94,6 +95,8 @@ export type DiskChange = {
 export type StudioSnapshot = {
   readonly connection: Connection;
   readonly slides: SlideList | null;
+  /** The open deck's agent chat, as the backend last reported it, or null before the first report. */
+  readonly chat: ChatState | null;
   /** The last change on disk the open deck reported, or null before the first. */
   readonly diskChange: DiskChange | null;
   readonly position: PreviewPosition | null;
@@ -140,6 +143,14 @@ export type SaveOutcome =
 /** How a slide move ended. */
 export type MoveOutcome = { readonly _tag: "Moved" } | { readonly _tag: "NotMoved" };
 
+/** How sending a prompt, stopping a turn or answering a permission request ended. */
+export type ChatOutcome = { readonly _tag: "Done" } | { readonly _tag: "Failed"; readonly message: string };
+
+/** How reading the observed changes ended. */
+export type ChangesOutcome =
+  | { readonly _tag: "Read"; readonly changes: ObservedChanges }
+  | { readonly _tag: "Failed"; readonly message: string };
+
 /** The renderer's handle on the backend. */
 export type StudioClient = {
   /** Call `listener` after every snapshot change; the returned function stops it. */
@@ -185,6 +196,14 @@ export type StudioClient = {
   readonly present: (url: string, frame: HTMLIFrameElement | null) => void;
   /** Tell the host whether the Source tab holds a draft with edits. */
   readonly reportUnsavedDraft: (unsaved: boolean) => void;
+  /** Send a prompt to the agent of the deck `scopeId` names. */
+  readonly sendPrompt: (scopeId: ScopeId, input: PromptInput) => Promise<ChatOutcome>;
+  /** Stop the running turn of the deck `scopeId` names. */
+  readonly stopAgent: (scopeId: ScopeId) => Promise<ChatOutcome>;
+  /** Answer a pending permission request with one of the choices the agent offered. */
+  readonly decide: (scopeId: ScopeId, requestId: string, optionId: string) => Promise<ChatOutcome>;
+  /** The files that changed on disk since the last turn started. */
+  readonly listChanges: (scopeId: ScopeId) => Promise<ChangesOutcome>;
   /** Call `listener` each time the host holds back a quit or a window close; returns the unsubscribe. */
   readonly onLeaveRequest: (listener: (intent: LeaveIntent) => void) => () => void;
   /** Go on with the quit or the window close the host held back. */
@@ -219,6 +238,7 @@ export function startStudioClient(host: StudioHost): StudioClient {
   let snapshot: StudioSnapshot = {
     connection: { _tag: "Connecting" },
     slides: null,
+    chat: null,
     diskChange: null,
     position: null,
     recent: [],
@@ -244,6 +264,9 @@ export function startStudioClient(host: StudioHost): StudioClient {
   // The scope whose slides and position the snapshot holds.
   let tracked: ScopeId | null = null;
   let changeSerial = 0;
+  // Set once the page told main to go on with a quit. Main stops answering the page while it
+  // shuts down, so a draft report the save's re-render sends after that would go nowhere.
+  let quitting = false;
 
   // Trace headers would need their own CORS allowance, and the renderer exports no traces.
   const run = <A, E>(effect: Effect.Effect<A, E, HttpClient.HttpClient>) =>
@@ -340,17 +363,33 @@ export function startStudioClient(host: StudioHost): StudioClient {
    * read follows the subscription and no edit falls between them; each later report reads again.
    */
   const followScope = (client: StudioRpcClient, scopeId: ScopeId) =>
-    client["deck.changed"]({ scopeId }).pipe(
-      Stream.runForEach(({ paths }) =>
-        Effect.suspend(() => {
-          if (tracked === scopeId && paths.length > 0) {
-            changeSerial += 1;
-            update({ diskChange: { scopeId, serial: changeSerial, paths } });
-          }
-          return refreshSlides(client, scopeId);
-        })
-      ),
-      Effect.ignore
+    Effect.all(
+      [
+        client["deck.changed"]({ scopeId }).pipe(
+          Stream.runForEach(({ paths }) =>
+            Effect.suspend(() => {
+              if (tracked === scopeId && paths.length > 0) {
+                changeSerial += 1;
+                update({ diskChange: { scopeId, serial: changeSerial, paths } });
+              }
+              return refreshSlides(client, scopeId);
+            })
+          ),
+          Effect.ignore
+        ),
+        // The chat, with its turn, which keeps Source read-only while the agent works.
+        client["agent.chat"]({ scopeId }).pipe(
+          Stream.runForEach((chat) =>
+            Effect.sync(() => {
+              if (tracked === scopeId) {
+                update({ chat });
+              }
+            })
+          ),
+          Effect.ignore
+        ),
+      ],
+      { concurrency: "unbounded", discard: true }
     );
 
   const session = Effect.gen(function* () {
@@ -437,6 +476,11 @@ export function startStudioClient(host: StudioHost): StudioClient {
       update({
         connection: { _tag: "Connected", studio },
         slides: newScope ? null : snapshot.slides,
+        // A chat of the scope that is open again stays until its stream reports.
+        chat:
+          studio._tag === "Empty" || (opened !== null && snapshot.chat?.scopeId !== opened.scopeId)
+            ? null
+            : snapshot.chat,
         position: newScope ? null : snapshot.position,
         reopening: studio._tag === "Open" ? null : (reopen ?? snapshot.reopening),
         reopenFailed: studio._tag === "Open" ? null : snapshot.reopenFailed,
@@ -478,6 +522,8 @@ export function startStudioClient(host: StudioHost): StudioClient {
           reason: ended._tag === "Failure" ? failureText(ended.cause) : "The backend closed the connection.",
         },
         slides: null,
+        // The chat stays, with its turn, so Source stays read-only while an agent turn may still
+        // run; the next session replaces it.
         position: null,
       });
       yield* Effect.sleep(RECONNECT_DELAY);
@@ -499,6 +545,27 @@ export function startStudioClient(host: StudioHost): StudioClient {
   };
 
   const notConnected = "The studio is not connected to its backend yet.";
+
+  /** Run a chat call on the current session, as a promise of how it ended. */
+  const chatCall = <E extends { readonly message: string }>(
+    call: (client: StudioRpcClient) => Effect.Effect<void, E>
+  ): Promise<ChatOutcome> => {
+    const client = rpc;
+    if (client === null) {
+      return Promise.resolve({ _tag: "Failed", message: notConnected });
+    }
+    return Effect.runPromise(
+      call(client).pipe(
+        Effect.match({
+          onFailure: (error): ChatOutcome => ({ _tag: "Failed", message: error.message }),
+          onSuccess: (): ChatOutcome => ({ _tag: "Done" }),
+        }),
+        Effect.catchCause((cause) =>
+          Effect.succeed<ChatOutcome>({ _tag: "Failed", message: failureText(cause) })
+        )
+      )
+    );
+  };
 
   const withClient = (action: (client: StudioRpcClient) => Effect.Effect<void>) => {
     if (rpc === null) {
@@ -653,14 +720,40 @@ export function startStudioClient(host: StudioHost): StudioClient {
       );
     },
     reportUnsavedDraft: (unsaved) => {
-      run(host.reportUnsavedDraft(unsaved).pipe(Effect.ignore));
+      if (!quitting) {
+        run(host.reportUnsavedDraft(unsaved).pipe(Effect.ignore));
+      }
+    },
+    sendPrompt: (scopeId, input) => chatCall((client) => client["agent.prompt"]({ scopeId, input })),
+    stopAgent: (scopeId) => chatCall((client) => client["agent.stop"]({ scopeId })),
+    decide: (scopeId, requestId, optionId) =>
+      chatCall((client) => client["agent.decide"]({ scopeId, requestId, optionId })),
+    listChanges: (scopeId) => {
+      const client = rpc;
+      if (client === null) {
+        return Promise.resolve({ _tag: "Failed", message: notConnected });
+      }
+      return Effect.runPromise(
+        client["changes.list"]({ scopeId }).pipe(
+          Effect.match({
+            onFailure: (error): ChangesOutcome => ({ _tag: "Failed", message: error.message }),
+            onSuccess: (changes): ChangesOutcome => ({ _tag: "Read", changes }),
+          }),
+          Effect.catchCause((cause) =>
+            Effect.succeed<ChangesOutcome>({ _tag: "Failed", message: failureText(cause) })
+          )
+        )
+      );
     },
     onLeaveRequest: (listener) => host.onLeaveRequest(listener),
     leave: (intent) => {
+      quitting ||= intent === "quit";
       run(
         host.leave(intent).pipe(
           Effect.match({
             onFailure: (error) => {
+              // Main did not go on, so it still answers the page's reports.
+              quitting = false;
               update({ notice: error.message });
             },
             onSuccess: () => undefined,

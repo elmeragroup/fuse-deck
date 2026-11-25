@@ -148,7 +148,9 @@
     ".claude/**",
     ".codex/**",
     ".cursor/**",
-    ".gemini/**"
+    ".gemini/**",
+    // effect-acp's schema, generated from the ACP releases by its scripts/generate.ts.
+    "packages/effect-acp/src/_generated/**"
   ],
   "options": {
     "typeAware": true
@@ -214,6 +216,37 @@
         "anti-slop/no-unknown-returns": "off",
         "anti-slop/no-unsafe-dictionary-type": "off",
         "anti-slop/no-runtime-typeof": "off",
+        "anti-slop/require-safety-comment-for-type-assertion": "off"
+      }
+    },
+    {
+      // effect-acp, vendored from t3code's packages/effect-acp (packages/effect-acp/README.md).
+      // Its hand-written files keep upstream's shape, so they diff against t3code; these are the
+      // rules that shape breaks. Code written for this repo follows every rule.
+      "files": [
+        "packages/effect-acp/src/**",
+        "packages/effect-acp/test/**",
+        "packages/effect-acp/scripts/**"
+      ],
+      "rules": {
+        "turbo/no-undeclared-env-vars": "off",
+        "typescript/consistent-type-definitions": "off",
+        "typescript/consistent-type-imports": "off",
+        "typescript/no-empty-object-type": "off",
+        "typescript/no-misused-spread": "off",
+        "typescript/no-non-null-assertion": "off",
+        "typescript/no-unnecessary-condition": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/require-array-sort-compare": "off",
+        "anti-slop/no-chained-type-assertions": "off",
+        "anti-slop/no-conditional-empty-object-spread": "off",
+        "anti-slop/no-known-value-widening": "off",
+        "anti-slop/no-runtime-typeof": "off",
+        "anti-slop/no-shape-in-symbol-names": "off",
+        "anti-slop/no-unknown-parameters": "off",
+        "anti-slop/no-unknown-returns": "off",
+        "anti-slop/no-unsafe-dictionary-type": "off",
         "anti-slop/require-safety-comment-for-type-assertion": "off"
       }
     },

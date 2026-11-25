@@ -10,10 +10,10 @@ const deckCoreRuntime = path.join(
 );
 
 export default defineConfig({
-  // The backend, bundled for Node with deck-core inlined, as fuse-deck's CLI is. Every other
-  // dependency stays external, so the staged install provides it, and `onlyBundle` fails the
-  // build when deck-core imports a package this one does not list in `dependencies`. The renderer
-  // is Vite's (vite.config.ts).
+  // The backend, bundled for Node with deck-core and effect-acp inlined, as fuse-deck's CLI
+  // inlines deck-core. Every other dependency stays external, so the staged install provides it,
+  // and `onlyBundle` fails the build when either imports a package this one does not list in
+  // `dependencies`. The renderer is Vite's (vite.config.ts).
   entry: { "server/bin": "src/server/bin.ts" },
   outDir: "dist",
   format: "esm",
@@ -22,7 +22,7 @@ export default defineConfig({
   dts: false,
   clean: false,
   deps: {
-    alwaysBundle: [/^@elmeragroup\/deck-core(?:\/.*)?$/],
+    alwaysBundle: [/^@elmeragroup\/deck-core(?:\/.*)?$/, /^@elmeragroup\/effect-acp(?:\/.*)?$/],
     onlyBundle: [],
   },
   copy: [{ from: deckCoreRuntime, to: "dist" }],

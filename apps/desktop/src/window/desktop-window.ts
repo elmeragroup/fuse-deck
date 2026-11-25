@@ -14,7 +14,13 @@
  *
  * While the page reports a draft with edits, closing the main window asks the page first: main
  * sends the request on `LEAVE_REQUEST_CHANNEL`, and the page answers through `leave` once the user
- * saved or discarded the draft. A reload or a crashed page clears the report.
+ * saved or discarded the draft, or reports its draft again when the user kept it. A reload or a
+ * crashed page clears the report.
+ *
+ * A page that never answers, hung or stuck, must not hold the app open: while a request is
+ * unanswered, a second quit or a second close goes on without asking, and the draft is dropped.
+ * The user who asked twice decides; no timer can tell a hung page from one whose user is still
+ * reading the question, and a timer would drop the draft of the second.
  */
 
 import * as Context from "effect/Context";
@@ -77,10 +83,14 @@ export class DesktopWindow extends Context.Service<
      * @param url - A page of the open deck, as `presentableUrl` checked it, with the position in its hash.
      */
     readonly present: (url: URL) => Effect.Effect<void, ElectronWindow.ElectronWindowCreateError>;
-    /** Record whether the page reports a draft with edits. */
+    /**
+     * Record whether the page reports a draft with edits. A report also answers an earlier request
+     * to leave that the user turned down.
+     */
     readonly recordUnsavedDraft: (unsaved: boolean) => Effect.Effect<void>;
     /**
-     * Ask the page to settle its draft before `intent` goes on, if it reported one with edits.
+     * Ask the page to settle its draft before `intent` goes on, if it reported one with edits and
+     * has answered every earlier request.
      *
      * @returns Whether the page was asked; when it was, the page calls `leave` to go on.
      */
@@ -112,6 +122,8 @@ export class DesktopWindow extends Context.Service<
         let presenting: Electron.BrowserWindow | undefined;
         // What the page last reported about its draft. A new page or a crashed one has none.
         let unsavedDraft = false;
+        // Whether the page has a request to leave it has not answered yet.
+        let asked = false;
         // Set once a quit is under way; from then on no close is held back.
         let quitting = false;
 
@@ -170,19 +182,24 @@ export class DesktopWindow extends Context.Service<
             runFork(electronWindow.reveal(window));
           });
           window.on("close", (event) => {
-            if (unsavedDraft && !quitting) {
+            // A second close while the first is unanswered goes on.
+            if (unsavedDraft && !quitting && !asked) {
               event.preventDefault();
+              asked = true;
               window.webContents.send(LEAVE_REQUEST_CHANNEL, "close" satisfies LeaveIntent);
             }
           });
           window.webContents.on("did-navigate", () => {
             unsavedDraft = false;
+            asked = false;
           });
           window.webContents.on("render-process-gone", () => {
             unsavedDraft = false;
+            asked = false;
           });
           window.on("closed", () => {
             unsavedDraft = false;
+            asked = false;
             closePresenting();
             runFork(electronWindow.clearMain(Option.some(window)));
           });
@@ -231,15 +248,18 @@ export class DesktopWindow extends Context.Service<
 
         const askToLeave = Effect.fn("DesktopWindow.askToLeave")(function* (intent: LeaveIntent) {
           const main = yield* electronWindow.main;
-          if (!unsavedDraft || Option.isNone(main)) {
+          // A second quit while the first is unanswered goes on.
+          if (!unsavedDraft || asked || Option.isNone(main)) {
             return false;
           }
+          asked = true;
           main.value.webContents.send(LEAVE_REQUEST_CHANNEL, intent);
           return true;
         });
 
         const leave = Effect.fn("DesktopWindow.leave")(function* (intent: LeaveIntent) {
           unsavedDraft = false;
+          asked = false;
           const main = yield* electronWindow.main;
           if (intent === "close" && Option.isSome(main)) {
             main.value.close();
@@ -252,6 +272,7 @@ export class DesktopWindow extends Context.Service<
           recordUnsavedDraft: (unsaved) =>
             Effect.sync(() => {
               unsavedDraft = unsaved;
+              asked = false;
             }),
           askToLeave,
           leave,

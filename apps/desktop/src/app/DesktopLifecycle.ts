@@ -147,6 +147,7 @@ function handleBeforeQuit(
   }
   // A page with an unsaved draft asks the user first; the quit stays "running" until the page
   // answers through the leave channel, which quits again. A cancelled quit leaves nothing behind.
+  // A second quit while the page has not answered is not asked about, and goes on.
   void runEffect(
     Effect.gen(function* () {
       const desktopWindow = yield* DesktopWindow;

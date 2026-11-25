@@ -15,7 +15,12 @@ import { runStudioServer } from "./studio-server.ts";
 // The build puts this file in dist/server and the deck runtime in dist/runtime.
 const runtimeRoot = path.join(import.meta.dirname, "..", "runtime");
 
-runStudioServer(runtimeRoot).pipe(
+runStudioServer(runtimeRoot, {
+  pathVariable: process.env.PATH ?? "/usr/bin:/bin",
+  shell: process.env.SHELL ?? "/bin/zsh",
+  // The agent's adapter runs on this Node, which is Electron's in the desktop app.
+  node: { executable: process.execPath, electron: process.versions.electron !== undefined },
+}).pipe(
   Effect.provideService(References.LogToStderr, true),
   Effect.provide(NodeServices.layer),
   // A normal stop exits the process too. Vite 8.3 can leave its watcher running after its

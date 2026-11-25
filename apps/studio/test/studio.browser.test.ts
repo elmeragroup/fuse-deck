@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
-import { mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "playwright";
@@ -17,6 +17,8 @@ import {
   TicketResponse,
 } from "../src/contract/studio-launch.ts";
 import { ScopeId } from "../src/contract/studio-rpc.ts";
+import { SETTINGS_FILE } from "../src/server/agent-launch.ts";
+import { MOCK_AGENT } from "./agent.ts";
 import { startBackend } from "./backend.ts";
 import type { Backend } from "./backend.ts";
 import { DECK_A, DECK_B, writeDeck } from "./decks.ts";
@@ -815,5 +817,177 @@ describe("Present", () => {
       .toBe("Deck A preview");
     await deck.getByRole("region", { name: "A two" }).waitFor();
     expect(await page.getByRole("tab", { name: "Preview" }).getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+/** Name the scripted mock agent as the backend's agent command, as a user's settings.json would. */
+async function useMockAgent(): Promise<void> {
+  await mkdir(path.join(workspace, "user-data"), { recursive: true });
+  await writeFile(
+    path.join(workspace, "user-data", SETTINGS_FILE),
+    JSON.stringify({ agent: { command: process.execPath, args: [MOCK_AGENT] } })
+  );
+}
+
+/** Send `text` from the chat's composer. */
+async function prompt(page: Page, text: string): Promise<void> {
+  const composer = page.getByRole("textbox", { name: "Message the agent" });
+  await composer.fill(text);
+  await composer.press("Enter");
+}
+
+describe("the agent chat", () => {
+  it("asks before the agent writes, keeps Source read-only meanwhile, and shows the write under Changes", async () => {
+    await useMockAgent();
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    const consoleErrors: string[] = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        consoleErrors.push(message.text());
+      }
+    });
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await prompt(page, "write a-one");
+    const chat = page.getByRole("complementary", { name: "Agent chat" });
+    await chat.getByRole("heading", { name: "Edit slides/a-one.mdx" }).waitFor();
+    // The card's diff parses the patch, whose headers name absolute paths as claude-acp's do.
+    await chat.getByText("Written by the mock agent.").waitFor();
+    expect(consoleErrors.filter((text) => text.includes("parsePatchContent"))).toEqual([]);
+    await page.getByText("The agent is working").waitFor();
+    expect(await editor.getAttribute("readonly")).not.toBeNull();
+    expect(await readFile(path.join(deckA, "slides", "a-one.mdx"), "utf8")).toBe("# A one\n");
+    await chat.getByRole("button", { name: "Allow" }).click();
+    await chat.getByText("Done.").waitFor();
+    // The agent names the deck's files by absolute path; the chat names them relative to the deck.
+    expect(await chat.getByText(deckA).count()).toBe(0);
+    await page.getByText("The agent is working").waitFor({ state: "detached" });
+    expect(await editor.getAttribute("readonly")).toBeNull();
+    expect(await readFile(path.join(deckA, "slides", "a-one.mdx"), "utf8")).toBe(
+      "# A one\n\nWritten by the mock agent.\n"
+    );
+    await page.getByRole("tab", { name: "Changes" }).click();
+    await page.getByRole("region", { name: "slides/a-one.mdx" }).waitFor();
+    await page.getByText("when turn 1 started").waitFor();
+  });
+
+  it("stops a turn: the request is withdrawn and Source is editable again", async () => {
+    await useMockAgent();
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await prompt(page, "wait");
+    const chat = page.getByRole("complementary", { name: "Agent chat" });
+    await chat.getByRole("heading", { name: "Wait for the user" }).waitFor();
+    await chat.getByRole("button", { name: "Stop" }).click();
+    await chat.getByText("Stopped.", { exact: true }).first().waitFor();
+    await chat.getByRole("button", { name: "Send" }).waitFor();
+    expect(await chat.getByRole("button", { name: "Allow" }).count()).toBe(0);
+    expect(await editor.getAttribute("readonly")).toBeNull();
+  });
+
+  it("shows a pending permission request again after the window reloads, and takes its answer", async () => {
+    await useMockAgent();
+    const bearer = await exchangeBootstrap();
+    const page = await openStudio({ bearer, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    await prompt(page, "write a-one");
+    const chat = page.getByRole("complementary", { name: "Agent chat" });
+    await chat.getByRole("button", { name: "Allow" }).waitFor();
+    await page.goto(
+      `${renderer.origin}/#${new URLSearchParams({ backend: backend.url, bearer }).toString()}`
+    );
+    await page.reload();
+    await chat.getByRole("button", { name: "Allow" }).click();
+    await chat.getByText("Done.").waitFor();
+    expect(await readFile(path.join(deckA, "slides", "a-one.mdx"), "utf8")).toBe(
+      "# A one\n\nWritten by the mock agent.\n"
+    );
+  });
+
+  it("shows each file of a patch over two files, and keeps the workspace and the draft", async () => {
+    await useMockAgent();
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    await editor.fill("# My draft\n");
+    await prompt(page, "patch2");
+    const chat = page.getByRole("complementary", { name: "Agent chat" });
+    await chat.getByRole("heading", { name: "Edit two slides" }).waitFor();
+    await chat.getByText("A one, patched").waitFor();
+    await chat.getByText("A two, patched").waitFor();
+    expect(await editor.inputValue()).toBe("# My draft\n");
+    await chat.getByRole("button", { name: "Stop" }).click();
+    await chat.getByRole("button", { name: "Send" }).waitFor();
+  });
+
+  it("starts no save from any save control while the agent's turn runs", async () => {
+    await useMockAgent();
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    await previewFrame(page, "Deck A", "A one");
+    const file = path.join(deckA, "slides", "a-one.mdx");
+    const editor = await openSource(page, "slides/a-one.mdx", "# A one\n");
+    // A save that finds the disk changed offers to save the draft over it.
+    await editor.fill("# My draft\n");
+    await writeFile(file, "# A one, on disk\n");
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    const overwrite = page.getByRole("button", { name: "Save my draft over it" });
+    await overwrite.waitFor();
+    await prompt(page, "wait");
+    const chat = page.getByRole("complementary", { name: "Agent chat" });
+    await chat.getByRole("heading", { name: "Wait for the user" }).waitFor();
+    const toolbar = await page.getByRole("button", { name: "Save", exact: true }).isDisabled();
+    const overwriteOff = await overwrite.isDisabled();
+    // The page behind the dialog is inert, so its buttons were read first.
+    const dialog = page.getByRole("dialog", { name: "Save your changes to slides/a-one.mdx?" });
+    await page.getByRole("button", { name: "Open…" }).click();
+    await dialog.waitFor();
+    expect({
+      toolbar,
+      overwrite: overwriteOff,
+      dialog: await dialog.getByRole("button", { name: "Save", exact: true }).isDisabled(),
+    }).toEqual({ toolbar: true, overwrite: true, dialog: true });
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    expect(await readFile(file, "utf8")).toBe("# A one, on disk\n");
+    await chat.getByRole("button", { name: "Stop" }).click();
+    await chat.getByRole("button", { name: "Send" }).waitFor();
+    // Once the turn ended, the draft saves over the disk again.
+    await overwrite.click();
+    await page.getByText("Saved slides/a-one.mdx.").waitFor();
+    expect(await readFile(file, "utf8")).toBe("# My draft\n");
+  });
+
+  it("shows no remote image from the agent's Markdown, and fetches nothing from it", async () => {
+    await useMockAgent();
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA });
+    const remote = "http://127.0.0.1:9/remote-picture.png";
+    const requested: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("remote-picture")) {
+        requested.push(request.url());
+      }
+    });
+    await previewFrame(page, "Deck A", "A one");
+    await prompt(page, `image ${remote}`);
+    const chat = page.getByRole("complementary", { name: "Agent chat" });
+    await chat.getByText("A remote picture:").waitFor();
+    await chat.getByRole("button", { name: "Send" }).waitFor();
+    expect(await chat.locator('img[src*="remote-picture"]').count()).toBe(0);
+    expect(requested).toEqual([]);
+  });
+
+  it("opens as a sheet below the lg width only when asked, with the shortcut", async () => {
+    const page = await openStudio({ bootstrap: backend.bootstrap, deck: deckA }, (opened) =>
+      opened.setViewportSize({ width: 800, height: 700 })
+    );
+    await previewFrame(page, "Deck A", "A one");
+    expect(await page.getByRole("dialog", { name: "Agent chat" }).count()).toBe(0);
+    await page.keyboard.press("Control+J");
+    await page
+      .getByRole("dialog", { name: "Agent chat" })
+      .getByRole("textbox", { name: "Message the agent" })
+      .waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog", { name: "Agent chat" }).waitFor({ state: "detached" });
   });
 });

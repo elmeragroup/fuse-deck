@@ -20,7 +20,9 @@
     ".claude/**",
     ".codex/**",
     ".cursor/**",
-    ".gemini/**"
+    ".gemini/**",
+    // effect-acp's generated schema, as in .oxlintrc.json.
+    "packages/effect-acp/src/_generated/**"
   ],
   "rules": {
     "effecttsgo/abort-controller-in-effect": "error",
@@ -149,6 +151,22 @@
     "effecttsgo/unstable-api-usage": "error"
   },
   "overrides": [
+    {
+      // effect-acp's hand-written files, vendored from t3code, as in .oxlintrc.json's override.
+      // These style rules would rewrite upstream's code; the correctness rules still hold.
+      "files": [
+        "packages/effect-acp/src/**",
+        "packages/effect-acp/test/**",
+        "packages/effect-acp/scripts/**"
+      ],
+      "rules": {
+        "effecttsgo/effect-fn-opportunity": "off",
+        "effecttsgo/global-json-in-effect": "off",
+        "effecttsgo/missing-concurrency-option": "off",
+        "effecttsgo/prefer-namespace-import": "off",
+        "effecttsgo/schema-number": "off"
+      }
+    },
     {
       // The files copied close to verbatim from t3code, as in .oxlintrc.json's override. These
       // style rules would rewrite upstream's code; the correctness rules still hold.

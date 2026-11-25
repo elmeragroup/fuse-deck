@@ -70,6 +70,13 @@ export const StudioRpcHandlers = StudioRpcs.toLayer(
           )
         ),
       "recent.list": () => recent.list,
+      "agent.chat": ({ scopeId }) => scopes.chat(scopeId),
+      "agent.prompt": ({ scopeId, input }) =>
+        scopes.admit(scopeId, "Read", ({ agent }) => agent.prompt(input)),
+      "agent.stop": ({ scopeId }) => scopes.admit(scopeId, "Read", ({ agent }) => agent.stop),
+      "agent.decide": ({ scopeId, requestId, optionId }) =>
+        scopes.admit(scopeId, "Read", ({ agent }) => agent.decide(requestId, optionId)),
+      "changes.list": ({ scopeId }) => scopes.admit(scopeId, "Read", ({ agent }) => agent.changes),
     });
   })
 );

@@ -10,7 +10,9 @@
 
 import react from "@vitejs/plugin-react";
 import * as Effect from "effect/Effect";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import type { Plugin } from "vite";
 
@@ -67,16 +69,61 @@ function studioFirstPaint(): Plugin {
   };
 }
 
+/**
+ * The licence and notice files of the Apache-2.0 packages bundled into the renderer, which the
+ * build copies to `third-party/<package>/`, so the desktop app ships them beside the code.
+ */
+const BUNDLED_NOTICES = {
+  "@pierre/words": ["LICENSE.md", "NOTICE.md"],
+  "@pierre/diffs": ["LICENSE.md"],
+  "@pierre/highlights": ["LICENSE.md", "NOTICE.md"],
+} as const;
+
+/**
+ * The directory of package `name`, found from the file its main entry resolves to. These packages
+ * export no `./package.json`, so the walk goes up to the `node_modules/<name>` directory.
+ */
+function packageRoot(name: string): string {
+  const entry = fileURLToPath(import.meta.resolve(name));
+  const marker = `${path.sep}node_modules${path.sep}${name.split("/").join(path.sep)}${path.sep}`;
+  const at = entry.lastIndexOf(marker);
+  if (at < 0) {
+    throw new Error(`${name} resolved outside node_modules: ${entry}`);
+  }
+  return entry.slice(0, at + marker.length);
+}
+
+/** Copy each bundled package's licence and notice into the build. */
+function bundledNotices(): Plugin {
+  return {
+    name: "studio:bundled-notices",
+    apply: "build",
+    async generateBundle() {
+      for (const [name, files] of Object.entries(BUNDLED_NOTICES)) {
+        const root = packageRoot(name);
+        for (const file of files) {
+          this.emitFile({
+            type: "asset",
+            fileName: `third-party/${name}/${file}`,
+            source: await readFile(path.join(root, file), "utf8"),
+          });
+        }
+      }
+    },
+  };
+}
+
 export default defineConfig({
   root: path.join(import.meta.dirname, "src", "renderer"),
   base: "./",
   envDir: false,
-  plugins: [react(), studioFirstPaint()],
+  plugins: [react(), studioFirstPaint(), bundledNotices()],
   build: {
     outDir: path.join(import.meta.dirname, "dist", "renderer"),
     emptyOutDir: true,
-    // The app loads from disk or the dev server, never over a network, so one bundle is fine.
-    chunkSizeWarningLimit: 1000,
+    // The app loads from disk or the dev server, never over a network, so one large bundle is
+    // fine; the diff highlighter's grammars stay separate chunks that load on demand.
+    chunkSizeWarningLimit: 1600,
   },
   server: {
     host: "127.0.0.1",

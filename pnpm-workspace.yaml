@@ -29,9 +29,11 @@ catalog:
   fast-check: 4.10.2
 
   # Effect. Keep the family on one version.
-  effect: 4.1.4
-  "@effect/platform-node": 4.1.4
-  "@effect/vitest": 4.1.4
+  effect: 4.1.5
+  "@effect/platform-node": 4.1.5
+  "@effect/vitest": 4.1.5
+  # effect-acp's schema generator (packages/effect-acp/scripts/generate.ts).
+  "@effect/openapi-generator": 4.1.5
 
   # The deck pipeline. Vite is exact because fuse-deck calls its experimental `runnerImport`, and
   # the packed smoke test is the tripwire for a change there.
@@ -57,6 +59,12 @@ catalog:
   # The studio renderer's router, as t3code's apps/web uses it.
   "@tanstack/react-router": 1.170.46
 
+  # The studio's chat: Markdown through @pierre/words, diffs through @pierre/diffs at t3code's pin,
+  # and the highlighter both share (words takes it as a peer; diffs pins this release).
+  "@pierre/diffs": 1.7.0-beta.4
+  "@pierre/highlights": 0.5.1
+  "@pierre/words": 0.3.0
+
   # The studio's desktop shell, at the releases t3code's apps/desktop runs (t3code 2fe7febc).
   electron: 44.10.1
   electron-builder: 26.16.1
@@ -66,7 +74,7 @@ autoInstallPeers: true
 overrides:
   # @effect/platform-node declares a caret range here, which resolves to a release whose
   # effect peer is newer than the catalog's effect. Keep the whole Effect family on one version.
-  "@effect/platform-node-shared": 4.1.4
+  "@effect/platform-node-shared": 4.1.5
 
 allowBuilds:
   "@parcel/watcher": true
