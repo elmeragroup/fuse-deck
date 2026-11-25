@@ -1,12 +1,12 @@
 /**
  * Fuse's theme entry, loaded through Vite. Node cannot load Fuse's TSX source, and the first-paint
- * bootstrap must be the text of Fuse's own function, so fuse-deck never imports Fuse in Node. It
- * resolves `@elmeragroup/fuse/theme` from this package, which gives Fuse's built theme entry, and
- * imports it with Vite's `runnerImport`.
+ * bootstrap must be the text of Fuse's own function, so the bundler never imports Fuse in Node. It
+ * resolves `@elmeragroup/fuse/theme` from the running module, which gives Fuse's built theme entry,
+ * and imports it with Vite's `runnerImport`.
  *
  * `runnerImport` resolves from `process.cwd()` unless it gets a root, and a deck usually sits outside
- * the install tree, so the root is the package directory. Vite then resolves Fuse's imports the same
- * way from any working directory. It gets no config file and none of the
+ * the install tree, so the root is the running module's directory. Vite then resolves Fuse's imports
+ * the same way from any working directory. It gets no config file and none of the
  * deck's plugins. It is `@experimental`: Vite is pinned exactly, and the packed smoke test is the
  * tripwire for a change.
  */
@@ -62,12 +62,12 @@ export class FuseThemeUnavailable extends Schema.TaggedError<FuseThemeUnavailabl
 /**
  * Load Fuse's theme entry once.
  *
- * @param packageRoot - fuse-deck's directory, the root Vite resolves from.
+ * @param root - The directory Vite resolves from, inside the install that holds Fuse.
  * @returns The deck's view of the theme module.
  */
-export const loadFuseTheme = (packageRoot: string) =>
+export const loadFuseTheme = (root: string) =>
   Effect.tryPromise({
-    try: () => importFuseTheme(packageRoot),
+    try: () => importFuseTheme(root),
     catch: (cause) =>
       new FuseThemeUnavailable({
         message: `Could not load @elmeragroup/fuse/theme: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -79,14 +79,14 @@ export const loadFuseTheme = (packageRoot: string) =>
  * Effect's `Config` only reads the environment, and this restores a value Vite writes, so it stays
  * a plain async function.
  */
-async function importFuseTheme(packageRoot: string): Promise<FuseThemeModule> {
+async function importFuseTheme(root: string): Promise<FuseThemeModule> {
   const entry = fileURLToPath(import.meta.resolve("@elmeragroup/fuse/theme"));
   // Resolving a serve config sets NODE_ENV to development when it is unset, and a later
   // `build` in this process would then bundle React's development build.
   const nodeEnv = process.env.NODE_ENV;
   try {
     const { module } = await runnerImport<FuseThemeModule>(entry, {
-      root: packageRoot,
+      root,
       configFile: false,
       logLevel: "silent",
     });

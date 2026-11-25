@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     projects: [
       {
-        // The deck model on real temporary directories, and the built bin spawned as a process.
+        // The built bin spawned as a process, on real temporary directories.
         test: {
           name: "unit",
           include: ["test/**/*.test.ts"],

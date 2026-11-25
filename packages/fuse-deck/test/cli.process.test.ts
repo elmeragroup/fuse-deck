@@ -21,7 +21,9 @@ type Run = { readonly status: number | null; readonly stdout: string; readonly s
 
 function fuseDeck(cwd: string, args: readonly string[]): Run {
   if (!existsSync(BIN)) {
-    throw new Error(`${BIN} is missing. Run \`pnpm --filter @elmeragroup/fuse-deck build\` first.`);
+    throw new Error(
+      `${BIN} is missing. Run \`pnpm turbo run build --filter=@elmeragroup/fuse-deck\` first, which builds deck-core too.`
+    );
   }
   const result = spawnSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8" });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };

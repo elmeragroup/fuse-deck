@@ -1,15 +1,15 @@
 /**
  * The Vite plugins that turn a deck directory into a site. Vite's root is the deck; the HTML shell,
- * the runtime and the slide pipeline belong to the package.
+ * the runtime and the slide pipeline belong to the bundler.
  *
  * - `virtual:fuse-deck` is the deck's manifest: its settings and, for each slide, the metadata the
  *   compile pass derives and a real `import()` of the slide, so Vite owns relative assets.
  * - The HTML shell links the token stylesheet in `<head>`, stamps Fuse's document attributes on
  *   `<html>`, and runs Fuse's classic color-scheme bootstrap after the stylesheet and before the
  *   module entry, in dev and in build.
- * - React, its JSX runtimes and Fuse resolve as if the package imported them. Compiled MDX imports
- *   `react/jsx-runtime` from the deck directory, which has no `node_modules`. In dev they go
- *   through Vite's dependency optimizer, also when fuse-deck itself is installed in `node_modules`.
+ * - React, its JSX runtimes and Fuse resolve as if the resolve anchor imported them. Compiled MDX
+ *   imports `react/jsx-runtime` from the deck directory, which has no `node_modules`. In dev they go
+ *   through Vite's dependency optimizer, also when the anchor sits in `node_modules`.
  * - A change to `deck.json` or to the set of slide files reloads the page. A slide edit that changes
  *   what the manifest emits for that slide invalidates it and reloads; any other slide edit is
  *   normal HMR. After a manifest load fails, the next edit under `slides/` invalidates and reloads.
@@ -25,7 +25,7 @@ export const MANIFEST_ID = "virtual:fuse-deck";
 const RESOLVED_MANIFEST_ID = `\0${MANIFEST_ID}`;
 
 /**
- * The bare specifiers resolved from the package rather than from the importer, each matched
+ * The bare specifiers resolved from the anchor rather than from the importer, each matched
  * exactly, so `react` never rewrites `react/jsx-runtime` or `react-dom/client`.
  */
 const PACKAGE_RESOLVED =
@@ -58,8 +58,10 @@ export type CompiledSlideModule = {
 export type DeckPluginInput = {
   /** The deck directory, Vite's root. */
   readonly root: string;
-  /** fuse-deck's package directory, where the runtime and shell live and dependencies resolve from. */
-  readonly packageRoot: string;
+  /** The directory holding the built runtime, `main.js` and `deck.css`, that the shell loads. */
+  readonly runtimeRoot: string;
+  /** The file React, React DOM and Fuse resolve from, as if it imported them. */
+  readonly resolveAnchor: string;
   /** The deck's title, for the shell's `<title>`. */
   readonly title: () => Promise<string>;
   /** The first-paint attributes and bootstrap, read again for each page. */
@@ -78,8 +80,8 @@ export type DeckPluginInput = {
  */
 export function deckPlugins(input: DeckPluginInput): Plugin[] {
   const indexHtml = path.join(input.root, "index.html");
-  const anchor = path.join(input.packageRoot, "package.json");
-  const runtime = (file: string) => `/@fs${path.join(input.packageRoot, "dist", "runtime", file)}`;
+  const anchor = input.resolveAnchor;
+  const runtime = (file: string) => `/@fs${path.join(input.runtimeRoot, file)}`;
 
   const shell = async () => `<!doctype html>
 <html lang="en">

@@ -19,19 +19,22 @@ import * as Result from "effect/Result";
 import * as Runtime from "effect/Runtime";
 import * as Schema from "effect/Schema";
 
+import { DEFAULT_OUT } from "@elmeragroup/deck-core/bundler/build-output";
+import { Bundler } from "@elmeragroup/deck-core/bundler/bundler";
+import { compileSlide } from "@elmeragroup/deck-core/bundler/mdx";
+import { checkDeck } from "@elmeragroup/deck-core/deck/check";
+import { DeckFiles } from "@elmeragroup/deck-core/deck/deck-files";
+import type { DeckManifest, OrderPosition } from "@elmeragroup/deck-core/deck/deck-manifest";
+import { describeDeck } from "@elmeragroup/deck-core/deck/describe";
+import type { DeckVocabularyDocument } from "@elmeragroup/deck-core/deck/describe";
+import { mdxText } from "@elmeragroup/deck-core/deck/mdx-text";
+import { DEFAULT_THEME, scaffoldDeck } from "@elmeragroup/deck-core/deck/scaffold";
+import { SlideId, slidePath } from "@elmeragroup/deck-core/deck/slide-id";
+import * as Vocabulary from "@elmeragroup/deck-core/deck/vocabulary";
+import type { LayoutName } from "@elmeragroup/deck-core/deck/vocabulary";
+
 import packageJson from "../../package.json" with { type: "json" };
-import { DEFAULT_OUT } from "../bundler/build-output.ts";
-import { Bundler } from "../bundler/bundler.ts";
-import { compileSlide } from "../bundler/mdx.ts";
-import { checkDeck } from "../deck/check.ts";
-import { DeckFiles } from "../deck/deck-files.ts";
-import type { DeckManifest, OrderPosition } from "../deck/deck-manifest.ts";
-import { mdxText } from "../deck/mdx-text.ts";
-import { DEFAULT_THEME, scaffoldDeck } from "../deck/scaffold.ts";
-import { SlideId, slidePath } from "../deck/slide-id.ts";
-import * as Vocabulary from "../deck/vocabulary.ts";
-import type { LayoutName } from "../deck/vocabulary.ts";
-import { shippedSkillPath } from "../package-root.ts";
+import { runtimeRoot, shippedSkillPath } from "../package-root.ts";
 import { jsonPresenter, Output, outputModeFromArgv, printDocument, reply, reportFailure } from "./output.ts";
 import type { ReportableError } from "./output.ts";
 
@@ -49,8 +52,8 @@ const Json = GlobalFlag.Setting("json")({
 /** The deck in the working directory or the nearest one above it. */
 const deckLayer = Layer.suspend(() => DeckFiles.layerFrom(process.cwd()));
 
-/** The deck and the bundler over it. */
-const bundlerLayer = Bundler.layer.pipe(Layer.provideMerge(deckLayer));
+/** The deck and the bundler over it, serving the runtime this package ships. */
+const bundlerLayer = Layer.suspend(() => Bundler.layer(runtimeRoot())).pipe(Layer.provideMerge(deckLayer));
 
 const create = Command.make(
   "create",
@@ -97,24 +100,8 @@ const describe = Command.make(
   "describe",
   {},
   Effect.fn("cli.describe")(function* () {
-    yield* reply({
-      document: {
-        _tag: "DeckVocabulary",
-        skill: shippedSkillPath(),
-        layouts: Vocabulary.LAYOUTS.map(({ name, summary }) => ({ name, summary })),
-        defaultLayout: Vocabulary.DEFAULT_LAYOUT,
-        frontmatter: Vocabulary.FRONTMATTER_FIELDS.map(({ name, type, summary }) => ({
-          name,
-          type,
-          summary,
-        })),
-        components: Vocabulary.COMPONENTS.map(({ name, usage, summary }) => ({ name, usage, summary })),
-        deck: Vocabulary.DECK_FIELDS.map(({ name, type, summary }) => ({ name, type, summary })),
-        files: Vocabulary.FILES.map(({ path, summary }) => ({ path, summary })),
-        commands: Vocabulary.VERBS.map(({ usage, summary }) => ({ usage, summary })),
-      },
-      text: describeText(),
-    });
+    const document = describeDeck(shippedSkillPath());
+    yield* reply({ document, text: describeText(document) });
   })
 ).pipe(
   Command.withDescription(
@@ -343,37 +330,35 @@ function orderText(manifest: DeckManifest): string {
   return `Order: ${manifest.order.join(", ")}`;
 }
 
-function describeText(): string {
+function describeText(document: DeckVocabularyDocument): string {
   const section = (title: string, rows: ReadonlyArray<readonly [string, string]>) =>
     [title, ...rows.map(([name, summary]) => `  ${name}\n    ${summary}`)].join("\n");
   return [
     section(
       "LAYOUTS",
-      Vocabulary.LAYOUTS.map(({ name, summary }) => [name, summary])
+      document.layouts.map(({ name, summary }) => [name, summary])
     ),
     section(
       "FRONTMATTER",
-      Vocabulary.FRONTMATTER_FIELDS.map(({ name, summary }) => [name, summary])
+      document.frontmatter.map(({ name, summary }) => [name, summary])
     ),
     section(
       "COMPONENTS",
-      Vocabulary.COMPONENTS.map(({ usage, summary }) => [usage, summary])
+      document.components.map(({ usage, summary }) => [usage, summary])
     ),
     section(
       "DECK.JSON",
-      Vocabulary.DECK_FIELDS.map(({ name, summary }) => [name, summary])
+      document.deck.map(({ name, summary }) => [name, summary])
     ),
     section(
       "FILES",
-      Vocabulary.FILES.map(({ path, summary }) => [path, summary])
+      document.files.map(({ path, summary }) => [path, summary])
     ),
     section(
       "COMMANDS",
-      Vocabulary.VERBS.map(({ usage, summary }) => [usage, summary])
+      document.commands.map(({ usage, summary }) => [usage, summary])
     ),
-    section("SKILL", [
-      [shippedSkillPath(), "The workflow for writing a deck. Open it before the first slide."],
-    ]),
+    section("SKILL", [[document.skill, "The workflow for writing a deck. Open it before the first slide."]]),
   ].join("\n\n");
 }
 

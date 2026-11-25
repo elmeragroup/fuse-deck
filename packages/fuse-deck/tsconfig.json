@@ -1,7 +1,7 @@
 {
   "extends": "@elmeragroup/typescript-config/base.json",
   "compilerOptions": {
-    // The command line and the bundler run in Node: no DOM types.
+    // The command line runs in Node: no DOM types.
     "lib": ["ESNext"],
     // `node` runs the CLI from source by stripping types, which cannot run enums or parameter
     // properties.
@@ -11,7 +11,5 @@
     "noImplicitOverride": true,
     "resolveJsonModule": true
   },
-  "include": ["src", "scripts", "tsdown.config.ts", "vitest.config.ts"],
-  // The browser runtime has tsconfig.runtime.json, and the tests tsconfig.test.json.
-  "exclude": ["src/runtime"]
+  "include": ["src", "scripts", "tsdown.config.ts", "vitest.config.ts"]
 }

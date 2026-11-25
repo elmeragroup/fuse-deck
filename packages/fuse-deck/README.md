@@ -41,11 +41,17 @@ deep import such as `@elmeragroup/fuse-deck/dist/runtime/main.js` fails.
 
 ## How it builds
 
-Node never imports Fuse. fuse-deck resolves `@elmeragroup/fuse/theme` from this package and loads it
-with Vite's `runnerImport`, rooted at the package directory, for the first-paint attributes, the
-color-scheme bootstrap and the theme check. The CLI owns the whole Vite config: the deck directory
-is the root, no `vite.config` loads, and the HTML shell and runtime come from the package. tsdown
-builds two targets: `dist/bin.mjs` for Node and `dist/runtime/` for the browser, which keeps React,
+The deck model, the bundler and the browser runtime live in the private
+[`packages/deck-core`](../deck-core), which is never published. tsdown inlines it into
+`dist/bin.mjs` and copies its built runtime to `dist/runtime/`, so the tarball needs nothing from
+the workspace. The build fails when deck-core imports a package this one does not list in
+`dependencies`.
+
+Node never imports Fuse. The bundler resolves `@elmeragroup/fuse/theme` from `dist/bin.mjs` and
+loads it with Vite's `runnerImport`, rooted at `dist/`, for the first-paint attributes, the
+color-scheme bootstrap and the theme check. React, React DOM and Fuse resolve from the same file.
+The bundler owns the whole Vite config: the deck directory is the root, no `vite.config` loads, the
+HTML shell comes from the bundler and the runtime from `dist/runtime/`. The runtime keeps React,
 Fuse and the deck manifest external.
 
 ## Tests
