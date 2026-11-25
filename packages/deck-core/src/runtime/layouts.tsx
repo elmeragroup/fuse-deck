@@ -16,4 +16,5 @@ export const LAYOUTS = {
   cover: layout("cover"),
   section: layout("section"),
   center: layout("center"),
+  blank: layout("blank"),
 } satisfies Record<LayoutName, (props: LayoutProps) => ReactNode>;

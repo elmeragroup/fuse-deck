@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@effect/platform-node": "catalog:",
+    "@fontsource-variable/inter": "catalog:",
     "@mdx-js/mdx": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "effect": "catalog:",

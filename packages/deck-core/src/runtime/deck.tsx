@@ -17,9 +17,10 @@ import { Morph } from "./morph.tsx";
 import { fromHash, moveForKey, moveTo, toHash } from "./position.ts";
 import type { Position } from "./position.ts";
 import { RevealedSteps, Step } from "./step.tsx";
+import { Video } from "./video.tsx";
 
 /** The components every slide gets without an import. */
-const MDX_COMPONENTS = { Step, Morph } satisfies MdxComponents;
+const MDX_COMPONENTS = { Step, Morph, Video } satisfies MdxComponents;
 
 /** A slide, loaded. */
 export type LoadedSlide = {
@@ -99,8 +100,12 @@ export function Deck({ deck }: { readonly deck: LoadedDeck }) {
       }
     };
     const onKey = (event: KeyboardEvent) => {
-      // A control in the slide that handled the key, such as a slider or a tab list, keeps it.
-      if (event.defaultPrevented || ownsKey(event.target, event.key)) {
+      // A control in the slide that handled the key, such as a slider, a video or an open overlay, keeps it.
+      if (
+        event.defaultPrevented ||
+        document.querySelector("[data-deck-overlay='open']") !== null ||
+        ownsKey(event.target, event.key)
+      ) {
         return;
       }
       const move = moveForKey(event);
@@ -205,15 +210,22 @@ function subscribeToResize(onChange: () => void): () => void {
 const ACTIVATABLE =
   "a[href], button, summary, [role='button'], [role='link'], [role='checkbox'], [role='switch'], [role='tab'], [role='menuitem'], [role='option']";
 
+/** Keys a focused `<video>` or `<audio>` element uses for playback, seeking and volume. */
+const MEDIA_KEYS = new Set([" ", "Enter", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"]);
+
 /**
- * Whether the focused element needs the key more than the deck: every key in a text field, and
- * Enter and Space on a control that a press activates.
+ * Whether the focused element needs the key more than the deck: every key in a text field, media
+ * keys on a `<video>` or `<audio>` element, and Enter and Space on a control that a press
+ * activates.
  */
 function ownsKey(target: EventTarget | null, key: string): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
   if (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) {
+    return true;
+  }
+  if (MEDIA_KEYS.has(key) && target.closest("video, audio") !== null) {
     return true;
   }
   return (key === "Enter" || key === " ") && target.closest(ACTIVATABLE) !== null;

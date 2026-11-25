@@ -14,3 +14,4 @@ playwright-report/
 # Reference clones and local scratch output.
 .ref/
 .scratch/
+.decks/

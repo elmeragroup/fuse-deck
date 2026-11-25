@@ -566,7 +566,7 @@ function bundlerFailed(operation: string) {
  * through the optimizer's cache.
  */
 function dependencyPackages(): DependencyPackage[] {
-  return ["react", "react-dom", "@elmeragroup/fuse"].flatMap((name) =>
+  return ["react", "react-dom", "@elmeragroup/fuse", "@fontsource-variable/inter"].flatMap((name) =>
     Option.toArray(dependencyPackage(name))
   );
 }
