@@ -1,8 +1,5 @@
 import { useEffect, useRef } from "react";
 
-import { SlideBackdropPortal } from "./slide-backdrop.tsx";
-import { useStepVisible } from "./step.tsx";
-
 type RGB = readonly [number, number, number];
 
 type Palette = {
@@ -605,7 +602,12 @@ function drawFrame(
   ctx.globalCompositeOperation = "source-over";
 }
 
-function GhostFiberCanvas() {
+/**
+ * Monochrome atmospheric ghost-fiber canvas rendered behind `<ElmeraCover>` when enabled.
+ * Adapts to light and dark themes, matches the viewport aspect ratio edge-to-edge, pauses when
+ * the document is hidden, and draws one calm static frame under `prefers-reduced-motion: reduce`.
+ */
+export function GhostFiberCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderedStillRef = useRef<{
@@ -839,17 +841,4 @@ function GhostFiberCanvas() {
       <canvas ref={canvasRef} className="deck-elmera-cover-canvas" width={1280} height={BASE_HEIGHT} />
     </div>
   );
-}
-
-/**
- * Monochrome atmospheric ghost-fiber canvas rendered behind `<ElmeraCover>` when enabled.
- * Adapts to light and dark themes, matches the viewport aspect ratio edge-to-edge, pauses when
- * the document is hidden, and draws one calm static frame under `prefers-reduced-motion: reduce`.
- */
-export function GhostFiberBackground() {
-  return useStepVisible() ? (
-    <SlideBackdropPortal>
-      <GhostFiberCanvas />
-    </SlideBackdropPortal>
-  ) : null;
 }

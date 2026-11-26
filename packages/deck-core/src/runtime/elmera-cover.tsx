@@ -1,6 +1,6 @@
 import { ElmeraGroupLogo } from "@elmeragroup/fuse/icons";
 
-import { GhostFiberBackground } from "./ghost-fiber.tsx";
+import { GhostFiberBackground } from "./slide-backdrop.tsx";
 
 const DEFAULT_TAGLINE = "Preferred by more customers. Every day.";
 
