@@ -84,7 +84,7 @@ export const COMPONENTS: readonly DeckComponent[] = [
     name: "ElmeraCover",
     usage: '<ElmeraCover background="ghost-fiber" />',
     summary:
-      "Centers Fuse's ElmeraGroupLogo wordmark with the tagline 'Preferred by more customers. Every day.' in Inter using the active theme's neutral tokens. Pass tagline to replace or omit the line, and optional background set to 'none' or 'ghost-fiber', defaulting to 'none', for a monochrome fiber canvas behind the cover.",
+      "Centers Fuse's ElmeraGroupLogo wordmark with the tagline 'Preferred by more customers. Every day.' in Inter using the active theme's neutral tokens. Pass tagline to replace the line, or pass tagline={null} or \"\" to omit it. Optional background is 'none' or 'ghost-fiber', defaulting to 'none', for a monochrome fiber canvas behind the cover.",
   },
 ];
 

@@ -19,6 +19,8 @@ declare global {
     viewTransitions?: ViewTransition[];
     /** For each view transition, the pseudo-elements it animates once it is ready. */
     viewTransitionPseudos?: Promise<string[]>[];
+    /** Main-canvas clearRect calls recorded by init scripts in reduced-motion render tests. */
+    ghostFiberClears?: number;
   }
 }
 
@@ -408,6 +410,10 @@ describe("a built deck with video and blank slides", () => {
     fuseDeck(deck, ["slides", "add", "chart"]);
     fuseDeck(deck, ["slides", "add", "elmera", "--layout", "center"]);
     fuseDeck(deck, ["slides", "add", "elmera-fiber", "--layout", "center"]);
+    fuseDeck(deck, ["slides", "add", "elmera-sibling", "--layout", "center"]);
+    fuseDeck(deck, ["slides", "add", "elmera-multiline", "--layout", "center"]);
+    fuseDeck(deck, ["slides", "add", "elmera-unbroken", "--layout", "center"]);
+    fuseDeck(deck, ["slides", "add", "elmera-no-tagline", "--layout", "center"]);
     const deckJson = path.join(deck, "deck.json");
     const rawManifest = await readFile(deckJson, "utf8");
     await writeFile(
@@ -456,6 +462,46 @@ describe("a built deck with video and blank slides", () => {
     await writeFile(
       path.join(deck, "slides", "elmera-fiber.mdx"),
       '---\nlayout: center\n---\n\n<ElmeraCover background="ghost-fiber" />\n'
+    );
+    await writeFile(
+      path.join(deck, "slides", "elmera-sibling.mdx"),
+      [
+        "---",
+        "layout: center",
+        "---",
+        "",
+        "<Split>",
+        '  <ElmeraCover background="ghost-fiber" />',
+        '  <div data-swatch="black" style={{ width: "100%", height: "100%", backgroundColor: "rgb(0, 0, 0)" }} />',
+        "</Split>",
+        "",
+      ].join("\n")
+    );
+    await writeFile(
+      path.join(deck, "slides", "elmera-multiline.mdx"),
+      [
+        "---",
+        "layout: center",
+        "---",
+        "",
+        '<ElmeraCover tagline="Preferred by more customers across every Nordic energy market, every single day of the year, delivering reliable power and transparent service." />',
+        "",
+      ].join("\n")
+    );
+    await writeFile(
+      path.join(deck, "slides", "elmera-unbroken.mdx"),
+      [
+        "---",
+        "layout: center",
+        "---",
+        "",
+        '<ElmeraCover tagline="https://elmeragroup.example/presentations/2026/quarter-four/customer-satisfaction-and-nordic-grid-modernization-overview-report" />',
+        "",
+      ].join("\n")
+    );
+    await writeFile(
+      path.join(deck, "slides", "elmera-no-tagline.mdx"),
+      "---\nlayout: center\n---\n\n<ElmeraCover tagline={null} />\n"
     );
     fuseDeck(deck, ["build"]);
     const server = await serve(path.join(deck, "dist"));
@@ -608,6 +654,170 @@ describe("a built deck with video and blank slides", () => {
       expect(Math.round(canvasBox.height)).toBe(Math.round(viewportBox.height));
     }
     expect(errors).toEqual([]);
+    await page.close();
+  });
+
+  it("paints ghost-fiber behind sibling slide content so a black swatch keeps its exact color", async () => {
+    const page = await browser.newPage({
+      reducedMotion: "reduce",
+      viewport: { width: 1280, height: 720 },
+    });
+    await page.goto(`${mediaSite}#/elmera-sibling`);
+    const slide = page.locator("[aria-roledescription=slide]");
+    await slide.waitFor();
+    await slide.locator("canvas").waitFor();
+
+    const swatch = slide.locator("[data-swatch='black']");
+    await swatch.waitFor();
+    const screenshot = await swatch.screenshot();
+    const dataUrl = `data:image/png;base64,${screenshot.toString("base64")}`;
+    const rgba = await page.evaluate(async (url) => {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      const probe = document.createElement("canvas");
+      probe.width = image.width;
+      probe.height = image.height;
+      const ctx = probe.getContext("2d");
+      if (ctx === null) {
+        return null;
+      }
+      ctx.drawImage(image, 0, 0);
+      const pixel = ctx.getImageData(Math.floor(image.width / 2), Math.floor(image.height / 2), 1, 1).data;
+      return [pixel[0], pixel[1], pixel[2], pixel[3]];
+    }, dataUrl);
+
+    expect(rgba).toEqual([0, 0, 0, 255]);
+    await page.close();
+  });
+
+  it("keeps the <ElmeraCover> wordmark centered with multi-line and long unbroken taglines", async () => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    for (const hash of ["#/elmera-multiline", "#/elmera-unbroken"]) {
+      await page.goto(`${mediaSite}${hash}`);
+      const slide = page.locator("[aria-roledescription=slide]");
+      await slide.waitFor();
+      const logo = slide.getByRole("img", { name: "Elmera Group" });
+      await logo.waitFor();
+      const tagline = slide.locator("p");
+      await tagline.waitFor();
+
+      const slideBox = await slide.boundingBox();
+      const logoBox = await logo.boundingBox();
+      const taglineBox = await tagline.boundingBox();
+      expect(slideBox).not.toBeNull();
+      expect(logoBox).not.toBeNull();
+      expect(taglineBox).not.toBeNull();
+      if (slideBox !== null && logoBox !== null && taglineBox !== null) {
+        const slideMidX = slideBox.x + slideBox.width / 2;
+        const slideMidY = slideBox.y + slideBox.height / 2;
+        const logoMidX = logoBox.x + logoBox.width / 2;
+        const logoMidY = logoBox.y + logoBox.height / 2;
+        const deltaX = Math.abs(logoMidX - slideMidX);
+        const deltaY = Math.abs(logoMidY - slideMidY);
+        const taglineInsideHorizontally =
+          taglineBox.x >= slideBox.x - 1 &&
+          taglineBox.x + taglineBox.width <= slideBox.x + slideBox.width + 1;
+        expect({
+          hash,
+          centeredX: deltaX <= 2,
+          centeredY: deltaY <= 2,
+          taglineInsideHorizontally,
+        }).toEqual({
+          hash,
+          centeredX: true,
+          centeredY: true,
+          taglineInsideHorizontally: true,
+        });
+      }
+    }
+    await page.close();
+  });
+
+  it("omits the tagline element when <ElmeraCover tagline={null} /> is passed", async () => {
+    const page = await browser.newPage();
+    await page.goto(`${mediaSite}#/elmera-no-tagline`);
+    const slide = page.locator("[aria-roledescription=slide]");
+    await slide.waitFor();
+    await slide.getByRole("img", { name: "Elmera Group" }).waitFor();
+    expect(await slide.locator(".deck-elmera-cover-tagline").count()).toBe(0);
+    await page.close();
+  });
+
+  it("draws ghost-fiber once on mount and once on resize under reduced motion", async () => {
+    const page = await browser.newPage({
+      reducedMotion: "reduce",
+      viewport: { width: 1600, height: 720 },
+    });
+    await page.addInitScript(() => {
+      window.ghostFiberClears = 0;
+      // oxlint-disable-next-line typescript/unbound-method -- saves prototype method and re-binds via .call(this, ...)
+      const originalClearRect = CanvasRenderingContext2D.prototype.clearRect;
+      CanvasRenderingContext2D.prototype.clearRect = function clearRect(
+        x: number,
+        y: number,
+        w: number,
+        h: number
+      ) {
+        if (this.canvas.isConnected) {
+          window.ghostFiberClears = (window.ghostFiberClears ?? 0) + 1;
+        }
+        originalClearRect.call(this, x, y, w, h);
+      };
+    });
+    await page.goto(`${mediaSite}#/elmera-fiber`);
+    const slide = page.locator("[aria-roledescription=slide]");
+    await slide.waitFor();
+    const canvas = slide.locator("canvas");
+    await canvas.waitFor();
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    );
+    expect(await page.evaluate(() => window.ghostFiberClears)).toBe(1);
+
+    await page.setViewportSize({ width: 1700, height: 720 });
+    await page.waitForFunction(() => document.querySelector("canvas")?.width === 1700);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    );
+    expect(await page.evaluate(() => window.ghostFiberClears)).toBe(2);
+    await page.close();
+  });
+
+  it("initializes the glow buffer at 1280x720 so resizing away and back yields the exact same still frame", async () => {
+    const page = await browser.newPage({
+      reducedMotion: "reduce",
+      viewport: { width: 1280, height: 720 },
+    });
+    await page.goto(`${mediaSite}#/elmera-fiber`);
+    const slide = page.locator("[aria-roledescription=slide]");
+    await slide.waitFor();
+    const canvas = slide.locator("canvas");
+    await canvas.waitFor();
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    );
+    const initial = await canvas.evaluate((element) =>
+      element instanceof HTMLCanvasElement ? element.toDataURL() : ""
+    );
+    expect(initial).not.toBe("");
+
+    await page.setViewportSize({ width: 1600, height: 720 });
+    await page.waitForFunction(() => document.querySelector("canvas")?.width === 1600);
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.waitForFunction(() => document.querySelector("canvas")?.width === 1280);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    );
+    const afterRoundTrip = await canvas.evaluate((element) =>
+      element instanceof HTMLCanvasElement ? element.toDataURL() : ""
+    );
+    expect(afterRoundTrip).toBe(initial);
     await page.close();
   });
 });

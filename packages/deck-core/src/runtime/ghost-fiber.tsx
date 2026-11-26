@@ -51,6 +51,41 @@ type DustSpeck = {
   readonly phase: number;
 };
 
+type DensityTier = {
+  readonly threadStride: number;
+  readonly dotStride: number;
+};
+
+type RibbonFrame = {
+  readonly ribbon: RibbonSpec;
+  readonly rt: number;
+  readonly cosRot: number;
+  readonly sinRot: number;
+  readonly span: number;
+  readonly xShift: number;
+  readonly halfW: number;
+  readonly halfH: number;
+  readonly scale: number;
+  readonly tiltX: number;
+  readonly tiltY: number;
+};
+
+type SpineSample = {
+  spineX: number;
+  spineY: number;
+  spineZ: number;
+  cosT: number;
+  sinT: number;
+  widthEnv: number;
+};
+
+type ProjectedPoint = {
+  px: number;
+  py: number;
+  pz3: number;
+  persp: number;
+};
+
 const LIGHT_PALETTE: Palette = {
   isDark: false,
   core: [16, 16, 20],
@@ -68,7 +103,7 @@ const DARK_PALETTE: Palette = {
 };
 
 // Hero sweeping S-curve silk veil plus a quiet distant lower-right echo.
-// Both expand with viewport aspect so ribbons travel past every screen edge.
+// Both expand with viewport aspect so ribbons travel past every screen edge without wasted off-screen span.
 const RIBBONS: readonly RibbonSpec[] = [
   {
     phase: 0.72,
@@ -77,8 +112,8 @@ const RIBBONS: readonly RibbonSpec[] = [
     yShift: -0.22,
     zOffset: 0.1,
     rotation: -0.34,
-    baseSpan: 3.4,
-    spanAspectScale: 2.15,
+    baseSpan: 2.8,
+    spanAspectScale: 1.75,
     halfWidth: 0.78,
     twistBase: 0.48,
     twistRate: 2.25,
@@ -99,8 +134,8 @@ const RIBBONS: readonly RibbonSpec[] = [
     yShift: 0.9,
     zOffset: -0.45,
     rotation: -0.58,
-    baseSpan: 2.0,
-    spanAspectScale: 1.15,
+    baseSpan: 1.8,
+    spanAspectScale: 0.95,
     halfWidth: 0.52,
     twistBase: 1.25,
     twistRate: 1.6,
@@ -114,6 +149,18 @@ const RIBBONS: readonly RibbonSpec[] = [
     weight: 0.58,
     glowWeight: 0.42,
   },
+];
+
+const FULL_DENSITY: DensityTier = { threadStride: 1, dotStride: 1 };
+
+// Animated density tiers: cap animated drawImage calls and step down cleanly when frames exceed budget,
+// while reduced-motion stills render at FULL_DENSITY.
+const ANIMATED_TIERS: readonly DensityTier[] = [
+  { threadStride: 2, dotStride: 1 },
+  { threadStride: 2, dotStride: 2 },
+  { threadStride: 3, dotStride: 2 },
+  { threadStride: 4, dotStride: 2 },
+  { threadStride: 4, dotStride: 3 },
 ];
 
 const GLOW_TRACKS = [
@@ -243,6 +290,65 @@ function computeCanvasSize(container: HTMLElement) {
   return { width, height: BASE_HEIGHT };
 }
 
+function intersectAxisInterval(
+  minU: number,
+  maxU: number,
+  origin: number,
+  slope: number,
+  limit: number
+): readonly [number, number] {
+  if (Math.abs(slope) < 1e-6) {
+    return Math.abs(origin) <= limit ? [minU, maxU] : [1, -1];
+  }
+  const a = (-limit - origin) / slope;
+  const b = (limit - origin) / slope;
+  return [Math.max(minU, Math.min(a, b)), Math.min(maxU, Math.max(a, b))];
+}
+
+function sampleRibbonSpine(frame: RibbonFrame, u: number, out: SpineSample): void {
+  const { ribbon, rt, span } = frame;
+  out.spineX = u * span;
+  out.spineY =
+    ribbon.waveAmp * Math.sin(u * ribbon.waveFreq + rt * 0.26 + ribbon.phase) +
+    ribbon.waveAmp * 0.36 * Math.sin(u * 3.15 - rt * 0.17 + ribbon.phase * 1.4);
+  out.spineZ =
+    ribbon.zOffset +
+    0.46 * Math.cos(u * 1.55 + rt * 0.22 + ribbon.phase) +
+    0.18 * Math.sin(u * 2.6 + rt * 0.14);
+
+  const twist =
+    ribbon.twistBase + u * ribbon.twistRate + rt * 0.15 + 0.42 * Math.sin(u * 1.3 - rt * 0.12 + ribbon.phase);
+  out.cosT = Math.cos(twist);
+  out.sinT = Math.sin(twist);
+  out.widthEnv = 0.66 + 0.34 * Math.cos(u * 1.35 - rt * 0.11);
+}
+
+function projectRibbonPoint(
+  frame: RibbonFrame,
+  spine: SpineSample,
+  vNorm: number,
+  normalOffset: number,
+  out: ProjectedPoint
+): void {
+  const { ribbon, cosRot, sinRot, xShift, halfW, halfH, scale, tiltX, tiltY } = frame;
+  const offset = vNorm * ribbon.halfWidth * spine.widthEnv;
+  const lx = spine.spineX + offset * 0.12 * spine.sinT;
+  const ly = spine.spineY + offset * spine.cosT + normalOffset * 0.35 * spine.sinT;
+  const lz = spine.spineZ + offset * spine.sinT + normalOffset * spine.cosT;
+
+  const rx = xShift + lx * cosRot - ly * sinRot;
+  const ry = ribbon.yShift + lx * sinRot + ly * cosRot;
+  const px3 = rx + lz * tiltX;
+  const py3 = ry + lz * tiltY;
+  const pz3 = lz - rx * tiltX * 0.22 - ry * tiltY * 0.22;
+  const persp = CAMERA_Z / Math.max(1.5, CAMERA_Z - pz3);
+
+  out.px = halfW + px3 * scale * persp;
+  out.py = halfH + py3 * scale * persp;
+  out.pz3 = pz3;
+  out.persp = persp;
+}
+
 function drawFrame(
   ctx: CanvasRenderingContext2D,
   glowCtx: CanvasRenderingContext2D,
@@ -251,7 +357,8 @@ function drawFrame(
   palette: Palette,
   t: number,
   tiltX: number,
-  tiltY: number
+  tiltY: number,
+  density: DensityTier
 ): void {
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
@@ -271,6 +378,19 @@ function drawFrame(
   ctx.globalCompositeOperation = blendMode;
   glowCtx.globalCompositeOperation = palette.isDark ? "lighter" : "source-over";
 
+  // Conservative world-space viewport bounds at minimum perspective for early off-screen culling.
+  const maxWorldX = (halfW + 32) / (scale * 0.68) + 0.25;
+  const maxWorldY = (halfH + 32) / (scale * 0.68) + 0.25;
+
+  const spine: SpineSample = { spineX: 0, spineY: 0, spineZ: 0, cosT: 1, sinT: 0, widthEnv: 1 };
+  const projected: ProjectedPoint = { px: 0, py: 0, pz3: 0, persp: 1 };
+
+  const { threadStride, dotStride } = density;
+  const strideArea = threadStride * dotStride;
+  // Compensate dot alpha and size subtly as animated stride steps down so luminous silk weight holds steady.
+  const alphaCompensation = strideArea > 1 ? Math.min(1.45, Math.pow(strideArea, 0.26)) : 1;
+  const sizeCompensation = strideArea > 1 ? Math.min(1.38, Math.pow(strideArea, 0.16)) : 1;
+
   for (let r = RIBBONS.length - 1; r >= 0; r -= 1) {
     const ribbon = RIBBONS[r];
     if (ribbon === undefined) {
@@ -285,61 +405,69 @@ function drawFrame(
     const threadCount = ribbon.threads;
     const dotCount = Math.max(48, Math.min(160, Math.round(span * ribbon.dotsPerUnit)));
 
+    const frame: RibbonFrame = {
+      ribbon,
+      rt,
+      cosRot,
+      sinRot,
+      span,
+      xShift,
+      halfW,
+      halfH,
+      scale,
+      tiltX,
+      tiltY,
+    };
+
+    const margin = ribbon.halfWidth + ribbon.waveAmp * 1.36 + ribbon.volume + 0.15;
+    const [uMinX, uMaxX] = intersectAxisInterval(-1, 1, xShift, span * cosRot, maxWorldX + margin);
+    const [uMin, uMax] = intersectAxisInterval(
+      uMinX,
+      uMaxX,
+      ribbon.yShift,
+      span * sinRot,
+      maxWorldY + margin
+    );
+    if (uMin > uMax) {
+      continue;
+    }
+
     // Pass 1: luminous satin fold crest and soft atmospheric veil into the quarter-res buffer.
     const spineSamples = Math.max(72, Math.round(span * 24));
-    for (let i = 0; i <= spineSamples; i += 1) {
+    const iStart = Math.max(0, Math.floor((uMin + 1) * 0.5 * spineSamples));
+    const iEnd = Math.min(spineSamples, Math.ceil((uMax + 1) * 0.5 * spineSamples));
+    for (let i = iStart; i <= iEnd; i += 1) {
       const frac = i / spineSamples;
       const u = frac * 2 - 1;
       const endFade = Math.min(1, frac * 8, (1 - frac) * 8);
-      const spineX = u * span;
-      const spineY =
-        ribbon.waveAmp * Math.sin(u * ribbon.waveFreq + rt * 0.26 + ribbon.phase) +
-        ribbon.waveAmp * 0.36 * Math.sin(u * 3.15 - rt * 0.17 + ribbon.phase * 1.4);
-      const spineZ =
-        ribbon.zOffset +
-        0.46 * Math.cos(u * 1.55 + rt * 0.22 + ribbon.phase) +
-        0.18 * Math.sin(u * 2.6 + rt * 0.14);
-
-      const twist =
-        ribbon.twistBase +
-        u * ribbon.twistRate +
-        rt * 0.15 +
-        0.42 * Math.sin(u * 1.3 - rt * 0.12 + ribbon.phase);
-      const cosT = Math.cos(twist);
-      const sinT = Math.sin(twist);
-      const fold = Math.pow(Math.abs(sinT), 1.85);
-      const widthEnv = 0.66 + 0.34 * Math.cos(u * 1.35 - rt * 0.11);
+      sampleRibbonSpine(frame, u, spine);
+      const fold = Math.pow(Math.abs(spine.sinT), 1.85);
 
       // Stamp wide atmospheric halo along the ribbon spine plus a tighter satin crest along the fold edge.
       for (const track of GLOW_TRACKS) {
-        const offset = track.v * ribbon.halfWidth * widthEnv;
-        const lx = spineX + offset * 0.12 * sinT;
-        const ly = spineY + offset * cosT;
-        const lz = spineZ + offset * sinT;
-
-        const rx = xShift + lx * cosRot - ly * sinRot;
-        const ry = ribbon.yShift + lx * sinRot + ly * cosRot;
-        const px3 = rx + lz * tiltX;
-        const py3 = ry + lz * tiltY;
-        const pz3 = lz - rx * tiltX * 0.22 - ry * tiltY * 0.22;
-        const persp = CAMERA_Z / Math.max(1.5, CAMERA_Z - pz3);
-
-        const gx = (halfW + px3 * scale * persp) * glowScaleX;
-        const gy = (halfH + py3 * scale * persp) * glowScaleY;
+        projectRibbonPoint(frame, spine, track.v, 0, projected);
+        const gx = projected.px * glowScaleX;
+        const gy = projected.py * glowScaleY;
 
         if (track.tight) {
           const ridgeStrength = fold * endFade * ribbon.glowWeight;
           if (ridgeStrength < 0.08) {
             continue;
           }
-          const radius = (6.8 + (1 - fold) * 4.5) * persp;
+          const radius = (6.8 + (1 - fold) * 4.5) * projected.persp;
+          if (gx < -radius || gx > glowW + radius || gy < -radius || gy > glowH + radius) {
+            continue;
+          }
           glowCtx.globalAlpha = Math.min(
             palette.isDark ? 0.4 : 0.16,
             (palette.isDark ? 0.27 : 0.1) * ridgeStrength
           );
           glowCtx.drawImage(sprites.ridgeGlow, gx - radius, gy - radius, radius * 2, radius * 2);
         } else {
-          const radius = (15 + (1 - fold) * 11) * persp;
+          const radius = (15 + (1 - fold) * 11) * projected.persp;
+          if (gx < -radius || gx > glowW + radius || gy < -radius || gy > glowH + radius) {
+            continue;
+          }
           const alpha = (palette.isDark ? 0.16 : 0.075) * ribbon.glowWeight * endFade * (0.28 + fold * 1.35);
           if (alpha < 0.008) {
             continue;
@@ -351,7 +479,15 @@ function drawFrame(
     }
 
     // Pass 2: braided stippled silk dot lattice with depth-of-field softening and fold caustics.
-    for (let j = 0; j < threadCount; j += 1) {
+    const threadSteps =
+      threadCount <= 1
+        ? 0
+        : threadStride === 1
+          ? threadCount - 1
+          : Math.max(2, Math.round((threadCount - 1) / threadStride));
+
+    for (let s = 0; s <= threadSteps; s += 1) {
+      const j = threadSteps > 0 ? Math.round((s / threadSteps) * (threadCount - 1)) : 0;
       const vNorm = threadCount > 1 ? (j / (threadCount - 1)) * 2 - 1 : 0;
       const absV = Math.abs(vNorm);
       // Slight brightening near the outer selvedge edge echoes light catching a folded silk border.
@@ -360,9 +496,15 @@ function drawFrame(
       const speedMul = THREAD_FLOW_DRIFT[j] ?? 1;
       // Smoothly staggered phase across adjacent threads creates the woven moire fabric rhythm.
       const braidedPhase = j * 0.017 + Math.sin(j * 0.35) * 0.012;
-      const flowShift = (((t * ribbon.flowSpeed * speedMul + braidedPhase) % 1) + 1) % 1;
+      const rawPhase = t * ribbon.flowSpeed * speedMul + braidedPhase;
+      const flowShift =
+        dotStride === 1 ? ((rawPhase % 1) + 1) % 1 : ((((rawPhase / dotStride) % 1) + 1) % 1) * dotStride;
 
-      for (let b = 0; b < dotCount; b += 1) {
+      const rawStart = Math.max(0, Math.floor((uMin + 1) * 0.5 * dotCount - flowShift));
+      const bStart = Math.floor(rawStart / dotStride) * dotStride;
+      const bEnd = Math.min(dotCount, Math.ceil((uMax + 1) * 0.5 * dotCount - flowShift) + 1);
+
+      for (let b = bStart; b < bEnd; b += dotStride) {
         const frac = (b + flowShift) / dotCount;
         const u = frac * 2 - 1;
         const endFade = Math.min(1, frac * 8, (1 - frac) * 8);
@@ -370,47 +512,19 @@ function drawFrame(
           continue;
         }
 
-        const spineX = u * span;
-        const spineY =
-          ribbon.waveAmp * Math.sin(u * ribbon.waveFreq + rt * 0.26 + ribbon.phase) +
-          ribbon.waveAmp * 0.36 * Math.sin(u * 3.15 - rt * 0.17 + ribbon.phase * 1.4);
-        const spineZ =
-          ribbon.zOffset +
-          0.46 * Math.cos(u * 1.55 + rt * 0.22 + ribbon.phase) +
-          0.18 * Math.sin(u * 2.6 + rt * 0.14);
-
-        const twist =
-          ribbon.twistBase +
-          u * ribbon.twistRate +
-          rt * 0.15 +
-          0.42 * Math.sin(u * 1.3 - rt * 0.12 + ribbon.phase);
-        const widthEnv = 0.66 + 0.34 * Math.cos(u * 1.35 - rt * 0.11);
-        const offset = vNorm * ribbon.halfWidth * widthEnv;
-        const cosT = Math.cos(twist);
-        const sinT = Math.sin(twist);
-
+        sampleRibbonSpine(frame, u, spine);
         // Subtle weave crimp undulation perpendicular to the ribbon surface.
         const weaveCrimp = 0.03 * Math.sin(u * 18 + j * 0.55);
-        const lx = spineX + offset * 0.12 * sinT;
-        const ly = spineY + offset * cosT + (zJitter + weaveCrimp) * 0.35 * sinT;
-        const lz = spineZ + offset * sinT + (zJitter + weaveCrimp) * cosT;
+        projectRibbonPoint(frame, spine, vNorm, zJitter + weaveCrimp, projected);
 
-        const rx = xShift + lx * cosRot - ly * sinRot;
-        const ry = ribbon.yShift + lx * sinRot + ly * cosRot;
-        const px3 = rx + lz * tiltX;
-        const py3 = ry + lz * tiltY;
-        const pz3 = lz - rx * tiltX * 0.22 - ry * tiltY * 0.22;
-        const persp = CAMERA_Z / Math.max(1.5, CAMERA_Z - pz3);
-
-        const px = halfW + px3 * scale * persp;
-        const py = halfH + py3 * scale * persp;
+        const { px, py, pz3, persp } = projected;
         if (px < -32 || px > w + 32 || py < -32 || py > h + 32) {
           continue;
         }
 
         const dof = Math.min(1.4, Math.abs(pz3 - FOCUS_Z));
         const inFocus = Math.max(0.28, 1 - dof * 0.56);
-        const fold = Math.abs(sinT);
+        const fold = Math.abs(spine.sinT);
         const caustic = Math.pow(fold, 1.75);
         const sparkleWave = 0.7 + 0.3 * Math.sin(b * 2.1 + j * 1.45 + t * 1.25);
         const depthFade = Math.max(0.32, Math.min(1.08, 0.82 + pz3 * 0.26));
@@ -423,7 +537,8 @@ function drawFrame(
           depthFade *
           inFocus *
           sparkleWave *
-          (0.42 + caustic * 0.95);
+          (0.42 + caustic * 0.95) *
+          alphaCompensation;
 
         if (baseAlpha < 0.02) {
           continue;
@@ -439,7 +554,8 @@ function drawFrame(
             ? sprites.sharpCore
             : sprites.sharpMid;
 
-        const size = (isOutOfFocus ? 6.8 + dof * 7.5 : 4.2 + dof * 3.0 + caustic * 1.35) * persp;
+        const size =
+          (isOutOfFocus ? 6.8 + dof * 7.5 : 4.2 + dof * 3.0 + caustic * 1.35) * persp * sizeCompensation;
         const halfSize = size * 0.5;
         ctx.globalAlpha = Math.min(palette.isDark ? 0.88 : 0.68, baseAlpha);
         ctx.drawImage(sprite, px - halfSize, py - halfSize, size, size);
@@ -448,11 +564,12 @@ function drawFrame(
   }
 
   // Pass 3: composite the satin fold crest and soft bloom over the stippled silk field.
+  // Bilinear smoothing ("low") avoids expensive Lanczos resampling on an already-blurred radial glow buffer.
   ctx.save();
   ctx.globalCompositeOperation = palette.isDark ? "screen" : "source-over";
   ctx.globalAlpha = palette.isDark ? 0.96 : 0.86;
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
+  ctx.imageSmoothingQuality = "low";
   ctx.drawImage(glowCanvas, 0, 0, w, h);
   ctx.restore();
 
@@ -466,14 +583,17 @@ function drawFrame(
     const persp = CAMERA_Z / Math.max(1.8, CAMERA_Z - speck.z);
     const px = halfW + x3 * scale * persp;
     const py = halfH + y3 * scale * persp;
+    const size = speck.size * persp;
+    const halfSize = size * 0.5;
+    if (px < -halfSize || px > w + halfSize || py < -halfSize || py > h + halfSize) {
+      continue;
+    }
     const twinkle = 0.48 + 0.52 * Math.sin(t * 0.9 + speck.phase);
     const edge = 1 - Math.abs(u) * 0.85;
     const alpha = (palette.isDark ? 0.4 : 0.26) * twinkle * Math.max(0, edge);
     if (alpha < 0.014) {
       continue;
     }
-    const size = speck.size * persp;
-    const halfSize = size * 0.5;
     ctx.globalAlpha = alpha;
     ctx.drawImage(sprites.bokehSecondary, px - halfSize, py - halfSize, size, size);
   }
@@ -490,6 +610,11 @@ function drawFrame(
 export function GhostFiberBackground() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const renderedStillRef = useRef<{
+    readonly width: number;
+    readonly height: number;
+    readonly isDark: boolean;
+  } | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -510,12 +635,21 @@ export function GhostFiberBackground() {
 
     const syncSize = () => {
       const next = computeCanvasSize(container);
+      const nextGlowWidth = Math.max(120, Math.round(next.width / 4));
+      const nextGlowHeight = Math.max(90, Math.round(next.height / 4));
+      let changed = false;
       if (canvas.width !== next.width || canvas.height !== next.height) {
         canvas.width = next.width;
         canvas.height = next.height;
-        glowCanvas.width = Math.max(120, Math.round(next.width / 4));
-        glowCanvas.height = Math.max(90, Math.round(next.height / 4));
+        renderedStillRef.current = null;
+        changed = true;
       }
+      if (glowCanvas.width !== nextGlowWidth || glowCanvas.height !== nextGlowHeight) {
+        glowCanvas.width = nextGlowWidth;
+        glowCanvas.height = nextGlowHeight;
+        changed = true;
+      }
+      return changed;
     };
     syncSize();
 
@@ -536,6 +670,12 @@ export function GhostFiberBackground() {
     let frameId: number | null = null;
     let elapsed = STILL_TIME;
     let lastNow = performance.now();
+    let hasFrameSample = false;
+    let tierIndex = 0;
+    let avgFrameMs = 16.7;
+    let avgDrawMs = 4;
+    let slowStreak = 0;
+    let fastStreak = 0;
 
     const stop = () => {
       if (frameId !== null) {
@@ -544,9 +684,20 @@ export function GhostFiberBackground() {
       }
     };
 
+    const startAnimation = () => {
+      stop();
+      if (reducedQuery.matches || document.hidden) {
+        return;
+      }
+      lastNow = performance.now();
+      hasFrameSample = false;
+      frameId = requestAnimationFrame(tick);
+    };
+
     const tick = (now: number) => {
       frameId = null;
-      const dt = Math.min(0.05, Math.max(0.001, (now - lastNow) / 1000));
+      const rawFrameMs = Math.max(1, now - lastNow);
+      const dt = Math.min(0.05, Math.max(0.001, rawFrameMs / 1000));
       lastNow = now;
       elapsed += dt;
 
@@ -559,40 +710,105 @@ export function GhostFiberBackground() {
       tiltX += velX * dt;
       tiltY += velY * dt;
 
-      drawFrame(ctx, glowCtx, glowCanvas, sprites, palette, elapsed, tiltX, tiltY);
+      const tier = ANIMATED_TIERS[tierIndex] ?? FULL_DENSITY;
+      renderedStillRef.current = null;
+      const drawStart = performance.now();
+      drawFrame(ctx, glowCtx, glowCanvas, sprites, palette, elapsed, tiltX, tiltY, tier);
+      const drawMs = performance.now() - drawStart;
+
+      // Adapt animated density when frame cadence or draw duration exceeds budget without oscillating.
+      const clampedFrameMs = Math.min(120, rawFrameMs);
+      avgDrawMs = avgDrawMs * 0.65 + drawMs * 0.35;
+      if (hasFrameSample) {
+        avgFrameMs = avgFrameMs * 0.7 + clampedFrameMs * 0.3;
+      }
+      hasFrameSample = true;
+
+      if (drawMs > 28 && tierIndex < ANIMATED_TIERS.length - 1) {
+        tierIndex = Math.min(ANIMATED_TIERS.length - 1, tierIndex + 2);
+        avgDrawMs = drawMs * 0.5;
+        avgFrameMs = clampedFrameMs * 0.6;
+        slowStreak = 0;
+        fastStreak = 0;
+      } else if (drawMs > 14 || avgFrameMs > 27) {
+        slowStreak += 1;
+        fastStreak = 0;
+        if (slowStreak >= 2 && tierIndex < ANIMATED_TIERS.length - 1) {
+          tierIndex += 1;
+          avgDrawMs = drawMs * 0.7;
+          avgFrameMs = clampedFrameMs * 0.75;
+          slowStreak = 0;
+        }
+      } else if (avgFrameMs < 19 && avgDrawMs < 6 && tierIndex > 0) {
+        fastStreak += 1;
+        slowStreak = 0;
+        if (fastStreak >= 30) {
+          tierIndex -= 1;
+          fastStreak = 0;
+        }
+      } else {
+        slowStreak = 0;
+        fastStreak = 0;
+      }
+
       if (!reducedQuery.matches && !document.hidden) {
         frameId = requestAnimationFrame(tick);
       }
     };
 
-    const startOrRenderStill = () => {
+    const renderStill = () => {
+      const rendered = renderedStillRef.current;
+      // Skip repainting the exact same reduced-motion still when StrictMode replays the effect on mount.
+      if (
+        rendered !== null &&
+        rendered.width === canvas.width &&
+        rendered.height === canvas.height &&
+        rendered.isDark === palette.isDark
+      ) {
+        return;
+      }
+      drawFrame(ctx, glowCtx, glowCanvas, sprites, palette, STILL_TIME, 0, 0, FULL_DENSITY);
+      renderedStillRef.current = { width: canvas.width, height: canvas.height, isDark: palette.isDark };
+    };
+
+    const onReducedMotionChange = () => {
       stop();
       if (reducedQuery.matches) {
-        drawFrame(ctx, glowCtx, glowCanvas, sprites, palette, STILL_TIME, 0, 0);
+        renderStill();
+        return;
+      }
+      startAnimation();
+    };
+
+    const onVisibilityChange = () => {
+      if (reducedQuery.matches) {
         return;
       }
       if (document.hidden) {
-        return;
+        stop();
+      } else {
+        startAnimation();
       }
-      lastNow = performance.now();
-      frameId = requestAnimationFrame(tick);
     };
 
     const onThemeChange = () => {
       const next = readPalette();
-      if (next.isDark !== palette.isDark) {
-        palette = next;
-        sprites = buildSprites(palette);
+      if (next.isDark === palette.isDark) {
+        return;
       }
+      palette = next;
+      sprites = buildSprites(palette);
       if (reducedQuery.matches) {
-        drawFrame(ctx, glowCtx, glowCanvas, sprites, palette, STILL_TIME, 0, 0);
+        renderStill();
       }
     };
 
     const onResize = () => {
-      syncSize();
+      if (!syncSize()) {
+        return;
+      }
       if (reducedQuery.matches) {
-        drawFrame(ctx, glowCtx, glowCanvas, sprites, palette, STILL_TIME, 0, 0);
+        renderStill();
       }
     };
 
@@ -616,22 +832,20 @@ export function GhostFiberBackground() {
     const resizeObserver = new ResizeObserver(onResize);
     resizeObserver.observe(container);
     colorQuery.addEventListener("change", onThemeChange);
-    reducedQuery.addEventListener("change", startOrRenderStill);
-    document.addEventListener("visibilitychange", startOrRenderStill);
-    window.addEventListener("resize", onResize);
+    reducedQuery.addEventListener("change", onReducedMotionChange);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("pointermove", onPointerMove, { passive: true });
     document.documentElement.addEventListener("pointerleave", onPointerLeave);
 
-    startOrRenderStill();
+    onReducedMotionChange();
 
     return () => {
       stop();
       observer.disconnect();
       resizeObserver.disconnect();
       colorQuery.removeEventListener("change", onThemeChange);
-      reducedQuery.removeEventListener("change", startOrRenderStill);
-      document.removeEventListener("visibilitychange", startOrRenderStill);
-      window.removeEventListener("resize", onResize);
+      reducedQuery.removeEventListener("change", onReducedMotionChange);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pointermove", onPointerMove);
       document.documentElement.removeEventListener("pointerleave", onPointerLeave);
     };
