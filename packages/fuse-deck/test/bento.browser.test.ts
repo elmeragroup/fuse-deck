@@ -892,4 +892,27 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
       brandedSite
     );
   });
+
+  it("uses a black surface in dark mode so nested Fuse components keep card contrast", async () => {
+    await onSlide("standalone", async (page) => {
+      await page.evaluate(() => {
+        document.documentElement.setAttribute("data-theme", "dark");
+      });
+      const card = page.locator(".deck-spotlight-card", { hasText: "Standalone" });
+      await card.waitFor();
+      const styles = await card.evaluate((element) => {
+        const probe = document.createElement("span");
+        probe.style.backgroundColor = "var(--surface)";
+        element.append(probe);
+        const surface = getComputedStyle(probe).backgroundColor;
+        probe.remove();
+        return {
+          backgroundColor: getComputedStyle(element).backgroundColor,
+          surface,
+        };
+      });
+      expect(styles.backgroundColor).toBe("oklch(0 0 0)");
+      expect(styles.surface).toBe("oklch(0 0 0)");
+    });
+  });
 });
