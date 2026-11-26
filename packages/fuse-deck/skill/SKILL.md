@@ -8,7 +8,8 @@ description: Write and edit fuse-deck presentations, Fuse-themed slide decks in 
 A deck is a directory. `deck.json` holds the settings and the slide order, and each slide is
 `slides/<id>.mdx`. `fuse-deck describe --json` lists the layouts, the components a slide can use
 without an import, the frontmatter keys, the settings and every command. Read it before writing a
-slide; this file does not repeat it.
+slide; this file does not repeat it. Deck-local `.tsx` components can import those same built-in
+components and their types from `@elmeragroup/fuse-deck/components`.
 
 1. If the deck has a `BRIEF.md`, read it for what the talk is for.
 2. Plan the slides as ids, then create each one with `fuse-deck slides add <id> --title <text>`,

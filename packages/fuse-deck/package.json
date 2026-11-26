@@ -5,7 +5,12 @@
   "description": "Builds Fuse-themed slide decks from MDX, with a command line written for agents.",
   "license": "MIT",
   "type": "module",
-  "exports": {},
+  "exports": {
+    "./components": {
+      "types": "./dist/runtime/components.d.ts",
+      "import": "./dist/runtime/components.js"
+    }
+  },
   "bin": {
     "fuse-deck": "./dist/bin.mjs"
   },
