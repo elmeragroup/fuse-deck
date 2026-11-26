@@ -86,6 +86,18 @@ export const COMPONENTS: readonly DeckComponent[] = [
     summary:
       "Centers Fuse's ElmeraGroupLogo wordmark with the tagline 'Preferred by more customers. Every day.' in Inter using the active theme's neutral tokens. Pass tagline to replace the line, or pass tagline={null} or \"\" to omit it. Optional background is 'none' or 'ghost-fiber', defaulting to 'none', for a monochrome fiber canvas behind the cover.",
   },
+  {
+    name: "Bento",
+    usage: "<Bento columns={4} rows={3}><SpotlightCard>…</SpotlightCard></Bento>",
+    summary:
+      "Arranges <SpotlightCard> tiles in a neutral slide-scale bento grid with coordinated radial spotlights and border proximity glow across neighboring tiles. Optional columns is 2, 3 or 4, defaulting to 4. Optional rows is 2 or 3, optional gap sets spacing in canvas pixels, optional spotlight toggles the lighting effect, and optional cursor takes local x, y coordinates to drive spotlights programmatically.",
+  },
+  {
+    name: "SpotlightCard",
+    usage: '<SpotlightCard colSpan={2} title="Button">…</SpotlightCard>',
+    summary:
+      "Renders a neutral Fuse-token card surface with a soft radial spotlight and luminous border proximity ring. Works standalone or inside <Bento>. Accepts optional colSpan, rowSpan, title, description, active and spotlight props.",
+  },
 ];
 
 /**

@@ -28,6 +28,9 @@ import type { FirstPaint } from "./fuse-theme.ts";
 export const MANIFEST_ID = "virtual:fuse-deck";
 const RESOLVED_MANIFEST_ID = `\0${MANIFEST_ID}`;
 
+/** The public subpath deck-local modules import built-in runtime components from. */
+export const COMPONENTS_ID = "@elmeragroup/fuse-deck/components";
+
 /**
  * The bare specifiers resolved from the anchor rather than from the importer, each matched
  * exactly, so `react` never rewrites `react/jsx-runtime` or `react-dom/client`.
@@ -156,6 +159,9 @@ export function deckPlugins(input: DeckPluginInput): Plugin[] {
       },
       // `scan` is Vite's internal flag for its dependency scan, which records the ids itself.
       async resolveId(source, importer, options: { readonly isEntry: boolean; readonly scan?: boolean }) {
+        if (source === COMPONENTS_ID) {
+          return path.join(input.runtimeRoot, "components.js");
+        }
         if (!PACKAGE_RESOLVED.test(source) || importer === anchor) {
           return null;
         }

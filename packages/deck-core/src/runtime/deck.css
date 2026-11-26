@@ -307,6 +307,183 @@ body {
   min-height: 0;
 }
 
+/* <Bento> & <SpotlightCard>: neutral Fuse-token bento grid with coordinated radial spotlight lighting. */
+.deck-bento {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.deck-bento[data-columns="2"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.deck-bento[data-columns="3"] {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.deck-bento[data-columns="4"] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.deck-bento[data-rows="2"] {
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.deck-bento[data-rows="3"] {
+  grid-template-rows: repeat(3, minmax(0, 1fr));
+}
+
+.deck-spotlight-card {
+  --deck-spot-x: 50%;
+  --deck-spot-y: 50%;
+  --deck-spot-alpha: 0;
+  --deck-spot-edge: 0;
+  --deck-spot-press: 0;
+  --deck-spot-radius: 280px;
+  /*
+   * A light rests at 1 / 1.45 and its border at 1 / 1.35 of full opacity, so a press can brighten
+   * them; the tint and rim carry the inverse, which keeps the resting intensity at 0.048 and 0.24.
+   */
+  --deck-spot-tint: oklch(0 0 0 / 0.0696);
+  --deck-spot-rim: oklch(0 0 0 / 0.324);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 20px;
+  background: var(--card, var(--background));
+  color: var(--card-foreground, var(--foreground));
+  box-shadow:
+    0 0 0 1px var(--card-border, oklch(0 0 0 / 0.07)),
+    0 1px 2px -1px var(--card-shadow, oklch(0 0 0 / 0.05)),
+    0 10px 24px -16px oklch(0 0 0 / 0.12);
+  transition: box-shadow 220ms var(--deck-ease-out);
+}
+
+[data-theme="dark"] .deck-spotlight-card {
+  --deck-spot-tint: oklch(1 0 0 / 0.1088);
+  --deck-spot-rim: oklch(1 0 0 / 0.459);
+  background: color-mix(in oklch, var(--card, var(--background)) 92%, white 8%);
+  box-shadow:
+    0 0 0 1px var(--card-border, oklch(1 0 0 / 0.09)),
+    0 16px 32px -20px oklch(0 0 0 / 0.55);
+}
+
+.deck-spotlight-card[data-active] {
+  box-shadow:
+    0 0 0 1px oklch(0 0 0 / 0.16),
+    0 2px 4px -1px var(--card-shadow, oklch(0 0 0 / 0.06)),
+    0 14px 30px -16px oklch(0 0 0 / 0.18);
+}
+
+[data-theme="dark"] .deck-spotlight-card[data-active] {
+  box-shadow:
+    0 0 0 1px oklch(1 0 0 / 0.24),
+    0 18px 36px -18px oklch(0 0 0 / 0.7);
+}
+
+.deck-spotlight-card[data-col-span="2"] {
+  grid-column: span 2;
+}
+
+.deck-spotlight-card[data-col-span="3"] {
+  grid-column: span 3;
+}
+
+.deck-spotlight-card[data-col-span="4"] {
+  grid-column: span 4;
+}
+
+.deck-spotlight-card[data-row-span="2"] {
+  grid-row: span 2;
+}
+
+.deck-spotlight-card[data-row-span="3"] {
+  grid-row: span 3;
+}
+
+.deck-spotlight-light,
+.deck-spotlight-border {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.deck-spotlight-light {
+  z-index: 1;
+  background: radial-gradient(
+    circle var(--deck-spot-radius) at var(--deck-spot-x) var(--deck-spot-y),
+    var(--deck-spot-tint) 0%,
+    transparent 72%
+  );
+  opacity: calc(var(--deck-spot-alpha) * (1 + var(--deck-spot-press) * 0.45) / 1.45);
+  transition: opacity 200ms var(--deck-ease-out);
+}
+
+.deck-spotlight-border {
+  z-index: 3;
+  padding: 1.5px;
+  background: radial-gradient(
+    circle calc(var(--deck-spot-radius) * 0.72) at var(--deck-spot-x) var(--deck-spot-y),
+    var(--deck-spot-rim) 0%,
+    transparent 74%
+  );
+  opacity: calc(var(--deck-spot-edge) * (1 + var(--deck-spot-press) * 0.35) / 1.35);
+  transition: opacity 180ms var(--deck-ease-out);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+
+.deck-spotlight-content {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.deck-spotlight-footer {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 22px 18px;
+  text-align: left;
+}
+
+.deck-spotlight-title {
+  font-size: 20px;
+  font-weight: var(--font-weight-semibold, 600);
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  color: var(--card-foreground, var(--foreground));
+}
+
+.deck-spotlight-description {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.32;
+  color: var(--muted-foreground);
+}
+
 /* Fuse charts on the 1920x1080 canvas take full width, 20px labels and a 460px plot height. */
 .deck-layout :where([data-slot="chart"]) {
   width: 100%;
@@ -579,7 +756,10 @@ span.deck-step {
     transition-delay: 0s, 0s;
   }
 
-  .deck-elmera-cover-bg {
+  .deck-elmera-cover-bg,
+  .deck-spotlight-card,
+  .deck-spotlight-light,
+  .deck-spotlight-border {
     transition: none;
   }
 

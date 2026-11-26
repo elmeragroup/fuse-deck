@@ -10,6 +10,7 @@ import {
 import type { ComponentType } from "react";
 
 import type { LayoutName } from "../deck/vocabulary.ts";
+import { Bento, SpotlightCard } from "./bento.tsx";
 import { bridgeParent, reportPosition, requestedPosition } from "./bridge.ts";
 import { ElmeraCover } from "./elmera-cover.tsx";
 import { LAYOUTS } from "./layouts.tsx";
@@ -23,7 +24,15 @@ import { RevealedSteps, Step } from "./step.tsx";
 import { Video } from "./video.tsx";
 
 /** The components every slide gets without an import. */
-const MDX_COMPONENTS = { Step, Morph, Video, Split, ElmeraCover } satisfies MdxComponents;
+const MDX_COMPONENTS = {
+  Step,
+  Morph,
+  Video,
+  Split,
+  ElmeraCover,
+  Bento,
+  SpotlightCard,
+} satisfies MdxComponents;
 
 /** A slide, loaded. */
 export type LoadedSlide = {
