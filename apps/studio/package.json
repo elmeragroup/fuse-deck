@@ -37,7 +37,7 @@
     "yaml": "catalog:"
   },
   "peerDependencies": {
-    "@elmeragroup/fuse": "^0.1.0-canary.213",
+    "@elmeragroup/fuse": "^0.1.0-canary.219",
     "react": "^19.3",
     "react-dom": "^19.3"
   },
