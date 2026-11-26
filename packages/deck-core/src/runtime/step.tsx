@@ -4,6 +4,17 @@ import type { ReactNode } from "react";
 /** How many of the current slide's steps are revealed. */
 export const RevealedSteps = createContext(0);
 
+/** Whether every enclosing `<Step>` ancestor is currently revealed. */
+const StepVisible = createContext(true);
+
+/**
+ * Returns whether every enclosing `<Step>` ancestor is revealed, or `true` when rendered outside
+ * any `<Step>`.
+ */
+export function useStepVisible(): boolean {
+  return use(StepVisible);
+}
+
 /** The props the compile pass gives a `<Step>`. */
 export type StepProps = {
   /**
@@ -21,11 +32,13 @@ export type StepProps = {
  * inert, so it takes no focus and assistive technology skips it.
  */
 export function Step({ index, inline, children }: StepProps) {
+  const parentVisible = use(StepVisible);
   const revealed = use(RevealedSteps) >= Number(index);
+  const visible = parentVisible && revealed;
   const Element = inline === true ? "span" : "div";
   return (
     <Element className="deck-step" data-revealed={revealed ? "" : undefined} inert={!revealed}>
-      {children}
+      <StepVisible value={visible}>{children}</StepVisible>
     </Element>
   );
 }

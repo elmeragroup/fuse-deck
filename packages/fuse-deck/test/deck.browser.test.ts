@@ -1,17 +1,14 @@
 import * as Schema from "effect/Schema";
-import { spawn, spawnSync } from "node:child_process";
-import { createReadStream } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import type { Browser, Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-/** The built bin, the file the packed tarball ships. Turbo builds it before this suite runs. */
+import { at, BIN, fuseDeck, serve } from "./browser-harness.ts";
+
 declare global {
   // oxlint-disable-next-line typescript/consistent-type-definitions -- only an interface merges into the DOM's Window
   interface Window {
@@ -21,8 +18,6 @@ declare global {
     viewTransitionPseudos?: Promise<string[]>[];
   }
 }
-
-const BIN = fileURLToPath(new URL("../dist/bin.mjs", import.meta.url));
 
 const SLIDES = {
   cover: '---\nlayout: cover\n---\n\n<Morph name="logo"> <span>Fuse</span> </Morph>\n\n# Talk\n',
@@ -36,56 +31,6 @@ let workspace = "";
 let site = "";
 let browser: Browser;
 let close: () => Promise<void> = () => Promise.resolve();
-
-function fuseDeck(cwd: string, args: readonly string[]): void {
-  const run = spawnSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8" });
-  if (run.status !== 0) {
-    throw new Error(`fuse-deck ${args.join(" ")} exited ${String(run.status)}: ${run.stdout}${run.stderr}`);
-  }
-}
-
-function contentType(extension: string): string {
-  switch (extension) {
-    case ".html":
-      return "text/html";
-    case ".js":
-      return "text/javascript";
-    case ".css":
-      return "text/css";
-    case ".mp4":
-      return "video/mp4";
-    case ".woff2":
-      return "font/woff2";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-/** Serves the built deck, the way any static host would. */
-async function serve(root: string): Promise<{ readonly url: string; readonly close: () => Promise<void> }> {
-  const server = createServer((request, response) => {
-    const pathname = new URL(request.url ?? "/", "http://deck").pathname;
-    const file = path.join(root, pathname === "/" ? "index.html" : pathname);
-    stat(file).then(
-      () => {
-        response.writeHead(200, {
-          "content-type": contentType(path.extname(file)),
-        });
-        createReadStream(file).pipe(response);
-      },
-      () => {
-        response.writeHead(404).end();
-      }
-    );
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  // SAFETY: a TCP server listening on a port reports an AddressInfo, never a pipe name or null.
-  const { port } = server.address() as AddressInfo;
-  return {
-    url: `http://127.0.0.1:${String(port)}/`,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-  };
-}
 
 beforeAll(async () => {
   workspace = await mkdtemp(path.join(tmpdir(), "fuse-deck-browser-"));
@@ -151,10 +96,6 @@ function viewTransitionCount(page: Page): Promise<number> {
     await Promise.all(started.map((transition) => transition.finished.catch(() => undefined)));
     return started.length;
   });
-}
-
-async function at(page: Page, hash: string): Promise<void> {
-  await page.waitForFunction((expected) => location.hash === expected, hash);
 }
 
 /** Which of the slide's steps are revealed, in document order. */
