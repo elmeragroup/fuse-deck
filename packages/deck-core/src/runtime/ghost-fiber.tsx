@@ -1,8 +1,7 @@
 import { useEffect, useRef } from "react";
 
-import { createPortal } from "react-dom";
-
-import { useSlideBackdropHost } from "./slide-backdrop.tsx";
+import { SlideBackdropPortal } from "./slide-backdrop.tsx";
+import { useStepVisible } from "./step.tsx";
 
 type RGB = readonly [number, number, number];
 
@@ -848,13 +847,9 @@ function GhostFiberCanvas() {
  * the document is hidden, and draws one calm static frame under `prefers-reduced-motion: reduce`.
  */
 export function GhostFiberBackground() {
-  const host = useSlideBackdropHost();
-  switch (host._tag) {
-    case "pending":
-      return null;
-    case "ready":
-      return createPortal(<GhostFiberCanvas />, host.element);
-    case "unmanaged":
-      return <GhostFiberCanvas />;
-  }
+  return useStepVisible() ? (
+    <SlideBackdropPortal>
+      <GhostFiberCanvas />
+    </SlideBackdropPortal>
+  ) : null;
 }

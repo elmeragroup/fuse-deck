@@ -442,6 +442,9 @@ describe("a built deck with video and blank slides", () => {
     fuseDeck(deck, ["slides", "add", "elmera-unbroken", "--layout", "center"]);
     fuseDeck(deck, ["slides", "add", "elmera-narrow-split", "--layout", "center"]);
     fuseDeck(deck, ["slides", "add", "elmera-no-tagline", "--layout", "center"]);
+    fuseDeck(deck, ["slides", "add", "elmera-step", "--layout", "center"]);
+    fuseDeck(deck, ["slides", "add", "elmera-nested-step", "--layout", "center"]);
+    fuseDeck(deck, ["slides", "add", "elmera-negative-z", "--layout", "center"]);
     const deckJson = path.join(deck, "deck.json");
     const rawManifest = await readFile(deckJson, "utf8");
     await writeFile(
@@ -560,6 +563,51 @@ describe("a built deck with video and blank slides", () => {
     await writeFile(
       path.join(deck, "slides", "elmera-no-tagline.mdx"),
       "---\nlayout: center\n---\n\n<ElmeraCover tagline={null} />\n"
+    );
+    await writeFile(
+      path.join(deck, "slides", "elmera-step.mdx"),
+      [
+        "---",
+        "layout: center",
+        "---",
+        "",
+        "<Step>",
+        '  <ElmeraCover background="ghost-fiber" />',
+        "</Step>",
+        "",
+      ].join("\n")
+    );
+    await writeFile(
+      path.join(deck, "slides", "elmera-nested-step.mdx"),
+      [
+        "---",
+        "layout: center",
+        "---",
+        "",
+        "<Step>",
+        "  Outer",
+        "  <Step>",
+        '    <ElmeraCover background="ghost-fiber" />',
+        "  </Step>",
+        "</Step>",
+        "",
+      ].join("\n")
+    );
+    await writeFile(
+      path.join(deck, "slides", "elmera-negative-z.mdx"),
+      [
+        "---",
+        "layout: center",
+        "---",
+        "",
+        "<Split>",
+        '  <ElmeraCover background="ghost-fiber" />',
+        '  <div style={{ width: "100%", height: "100%" }}>',
+        '    <div data-swatch="negative-z" style={{ position: "absolute", top: 0, right: 0, width: "50%", height: "100%", zIndex: -2, backgroundColor: "rgb(0, 0, 0)" }} />',
+        "  </div>",
+        "</Split>",
+        "",
+      ].join("\n")
     );
     fuseDeck(deck, ["build"]);
     const server = await serve(path.join(deck, "dist"));
@@ -938,5 +986,89 @@ describe("a built deck with video and blank slides", () => {
     );
     expect(afterRoundTrip).toBe(initial);
     await page.close();
+  });
+
+  it("defers mounting the ghost-fiber canvas until enclosing <Step> elements are revealed", async () => {
+    const page = await browser.newPage({
+      reducedMotion: "reduce",
+      viewport: { width: 1280, height: 720 },
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    try {
+      await page.goto(`${mediaSite}#/elmera-step`);
+      const slide = page.locator("[aria-roledescription=slide]");
+      await slide.waitFor();
+      expect(await slide.locator("canvas").count()).toBe(0);
+      expect(await slide.locator(".deck-slide-backdrop").count()).toBe(0);
+
+      await page.keyboard.press("ArrowRight");
+      await at(page, "#/elmera-step/1");
+      await slide.locator("canvas").waitFor();
+      expect(await slide.locator("canvas").count()).toBe(1);
+
+      await page.keyboard.press("ArrowLeft");
+      await at(page, "#/elmera-step");
+      await expect.poll(() => slide.locator("canvas").count()).toBe(0);
+      expect(await slide.locator(".deck-slide-backdrop").count()).toBe(0);
+
+      await page.goto(`${mediaSite}#/elmera-nested-step`);
+      await slide.waitFor();
+      expect(await slide.locator("canvas").count()).toBe(0);
+
+      await page.keyboard.press("ArrowRight");
+      await at(page, "#/elmera-nested-step/1");
+      expect(await slide.locator("canvas").count()).toBe(0);
+
+      await page.keyboard.press("ArrowRight");
+      await at(page, "#/elmera-nested-step/2");
+      await slide.locator("canvas").waitFor();
+      expect(await slide.locator("canvas").count()).toBe(1);
+
+      await page.keyboard.press("ArrowLeft");
+      await at(page, "#/elmera-nested-step/1");
+      await expect.poll(() => slide.locator("canvas").count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it("keeps a negative-z-index opaque sibling strictly above the ghost-fiber backdrop", async () => {
+    const page = await browser.newPage({
+      reducedMotion: "reduce",
+      viewport: { width: 1280, height: 720 },
+    });
+    try {
+      await page.goto(`${mediaSite}#/elmera-negative-z`);
+      const slide = page.locator("[aria-roledescription=slide]");
+      await slide.waitFor();
+      await slide.locator("canvas").waitFor();
+
+      const swatch = slide.locator("[data-swatch='negative-z']");
+      await swatch.waitFor();
+      expect(await centerPixelRgba(page, swatch)).toEqual([0, 0, 0, 255]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it("omits .deck-slide-backdrop on plain slides and keeps .deck-layout as :first-child", async () => {
+    const page = await browser.newPage({ reducedMotion: "reduce" });
+    try {
+      await page.goto(`${mediaSite}#/elmera`);
+      const slide = page.locator("[aria-roledescription=slide]");
+      await slide.waitFor();
+      expect(await slide.locator(".deck-slide-backdrop").count()).toBe(0);
+      expect(await page.locator(".deck-slide > .deck-layout:first-child").count()).toBe(1);
+
+      await page.goto(`${mediaSite}#/elmera-fiber`);
+      await slide.waitFor();
+      await slide.locator("canvas").waitFor();
+      expect(await slide.locator(".deck-slide-backdrop").count()).toBe(1);
+      expect(await page.locator(".deck-slide > .deck-layout:first-child").count()).toBe(1);
+    } finally {
+      await page.close();
+    }
   });
 });

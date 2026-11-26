@@ -1,50 +1,60 @@
-import { createContext, use, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, use, useCallback, useLayoutEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 
-/**
- * The slide-level backdrop mount point inside a `<Deck>`:
- * - `unmanaged`: rendered outside a `<Deck>`, so backdrops mount inline.
- * - `pending`: inside a `<Deck>` before the slide backdrop host commits, so backdrops wait instead
- *   of mounting inline and remounting.
- * - `ready`: inside a `<Deck>` with the slide backdrop host mounted and ready for portals.
- */
-export type SlideBackdropHost =
-  | { readonly _tag: "unmanaged" }
-  | { readonly _tag: "pending" }
-  | { readonly _tag: "ready"; readonly element: HTMLDivElement };
+import { createPortal } from "react-dom";
 
-const UNMANAGED_HOST = { _tag: "unmanaged" } as const;
-const PENDING_HOST = { _tag: "pending" } as const;
+type SlideBackdropRegistration = {
+  readonly host: HTMLDivElement | null;
+  readonly register: () => () => void;
+};
 
-const SlideBackdropContext = createContext<SlideBackdropHost>(UNMANAGED_HOST);
+const SlideBackdropContext = createContext<SlideBackdropRegistration | null>(null);
 
 /**
- * Provides a slide-level backdrop mount point as the first direct child of `.deck-slide`, so
- * slide backgrounds stay centered on the slide and behind every sibling even when the component
- * requesting them sits inside a positioned or stacked wrapper.
+ * Provides a lazy slide-level backdrop mount point as a direct child of `.deck-slide`, rendered
+ * after slide content only while at least one `<SlideBackdropPortal>` is active. Slide backgrounds
+ * stay centered on the slide and behind every sibling without adding DOM nodes to plain slides.
  */
 export function SlideBackdrop({ children }: { readonly children?: ReactNode }) {
-  const hostRef = useRef<HTMLDivElement>(null);
+  const [activeCount, setActiveCount] = useState(0);
   const [host, setHost] = useState<HTMLDivElement | null>(null);
 
-  useLayoutEffect(() => {
-    setHost(hostRef.current);
+  const register = useCallback(() => {
+    setActiveCount((count) => count + 1);
+    return () => {
+      setActiveCount((count) => count - 1);
+    };
   }, []);
 
-  const value = useMemo<SlideBackdropHost>(
-    () => (host === null ? PENDING_HOST : { _tag: "ready", element: host }),
-    [host]
-  );
+  const value = useMemo<SlideBackdropRegistration>(() => ({ host, register }), [host, register]);
 
   return (
     <>
-      <div ref={hostRef} className="deck-slide-backdrop" aria-hidden="true" />
       <SlideBackdropContext value={value}>{children}</SlideBackdropContext>
+      {activeCount > 0 && <div ref={setHost} className="deck-slide-backdrop" aria-hidden="true" />}
     </>
   );
 }
 
-/** Returns the current slide's backdrop host state for portaling slide-level backgrounds. */
-export function useSlideBackdropHost(): SlideBackdropHost {
-  return use(SlideBackdropContext);
+/**
+ * Registers a slide-level backdrop with the enclosing `<SlideBackdrop>` and portals its children
+ * into the slide's `.deck-slide-backdrop` host once committed.
+ */
+export function SlideBackdropPortal({ children }: { readonly children?: ReactNode }) {
+  const backdrop = use(SlideBackdropContext);
+  const register = backdrop?.register ?? null;
+
+  useLayoutEffect(() => {
+    if (register === null) {
+      return;
+    }
+    return register();
+  }, [register]);
+
+  const host = backdrop?.host ?? null;
+  if (host === null) {
+    return null;
+  }
+
+  return createPortal(children, host);
 }
