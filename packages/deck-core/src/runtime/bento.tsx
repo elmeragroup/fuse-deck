@@ -76,6 +76,38 @@ function isOutsideCards(event: Event): boolean {
   return event.target instanceof Element && event.target.closest(".deck-spotlight-card") === null;
 }
 
+/**
+ * Hears the real pointer on the whole window in the capture phase, so a handler inside a tile
+ * cannot hide a press or its release. Touch contacts never reach either callback: `onPointer`
+ * hears a move, press or release, `onExit` a cancel or the pointer leaving the page. Returns the
+ * function that removes every listener.
+ */
+function listenToPointer(onPointer: (event: PointerEvent) => void, onExit: () => void): () => void {
+  const onMove = (event: PointerEvent) => {
+    if (!isTouch(event)) {
+      onPointer(event);
+    }
+  };
+  const onLeave = (event: PointerEvent) => {
+    if (!isTouch(event)) {
+      onExit();
+    }
+  };
+  const capture = { capture: true, passive: true };
+  window.addEventListener("pointermove", onMove, capture);
+  window.addEventListener("pointerdown", onMove, capture);
+  window.addEventListener("pointerup", onMove, capture);
+  window.addEventListener("pointercancel", onLeave, capture);
+  document.documentElement.addEventListener("pointerleave", onLeave);
+  return () => {
+    window.removeEventListener("pointermove", onMove, capture);
+    window.removeEventListener("pointerdown", onMove, capture);
+    window.removeEventListener("pointerup", onMove, capture);
+    window.removeEventListener("pointercancel", onLeave, capture);
+    document.documentElement.removeEventListener("pointerleave", onLeave);
+  };
+}
+
 /** A point in viewport coordinates, as pointer events and `getBoundingClientRect` give them. */
 type ClientPoint = {
   readonly clientX: number;
@@ -312,55 +344,46 @@ export function Bento({
     const reducedQuery = window.matchMedia(REDUCED_MOTION);
     const finePointer = window.matchMedia(FINE_POINTER);
 
-    // Read in the capture phase, so a tile's own handler cannot hide a press or its release.
-    const onPointer = (event: PointerEvent) => {
-      if (isTouch(event)) {
-        return;
+    const stopListening = listenToPointer(
+      (event) => {
+        pointerRef.current = { clientX: event.clientX, clientY: event.clientY };
+        pressedRef.current = event.buttons !== 0;
+        repaint();
+      },
+      () => {
+        pointerRef.current = null;
+        pressedRef.current = false;
+        repaint();
       }
-      pointerRef.current = { clientX: event.clientX, clientY: event.clientY };
-      pressedRef.current = event.buttons !== 0;
-      repaint();
-    };
-    const onPointerExit = (event: PointerEvent) => {
-      if (isTouch(event)) {
-        return;
-      }
-      pointerRef.current = null;
-      pressedRef.current = false;
-      repaint();
-    };
-    // A wrapper settling, such as a revealed `<Step>`, moves its tiles without resizing them.
+    );
+    // A box settling around the grid or inside it, such as a revealed `<Step>`, moves tiles without
+    // resizing them; heard on the document, since a transition on an ancestor never reaches the grid.
     const onTransitionEnd = (event: TransitionEvent) => {
-      if (isOutsideCards(event)) {
+      const target = event.target;
+      if (grid === null || !(target instanceof Node)) {
+        return;
+      }
+      if (target.contains(grid) || (grid.contains(target) && isOutsideCards(event))) {
         scheduleRepaint();
       }
     };
+    const transitionCapture = { capture: true, passive: true };
 
-    const capture = { capture: true, passive: true };
-    window.addEventListener("pointermove", onPointer, capture);
-    window.addEventListener("pointerdown", onPointer, capture);
-    window.addEventListener("pointerup", onPointer, capture);
-    window.addEventListener("pointercancel", onPointerExit, capture);
-    document.documentElement.addEventListener("pointerleave", onPointerExit);
     reducedQuery.addEventListener("change", repaint);
     finePointer.addEventListener("change", repaint);
     // The deck applies a new canvas scale in the render after `resize`, a transform no observer sees.
     window.addEventListener("resize", scheduleRepaint);
     if (grid !== null) {
       observer().observe(grid);
-      grid.addEventListener("transitionend", onTransitionEnd);
+      document.addEventListener("transitionend", onTransitionEnd, transitionCapture);
     }
 
     return () => {
-      window.removeEventListener("pointermove", onPointer, capture);
-      window.removeEventListener("pointerdown", onPointer, capture);
-      window.removeEventListener("pointerup", onPointer, capture);
-      window.removeEventListener("pointercancel", onPointerExit, capture);
-      document.documentElement.removeEventListener("pointerleave", onPointerExit);
+      stopListening();
       reducedQuery.removeEventListener("change", repaint);
       finePointer.removeEventListener("change", repaint);
       window.removeEventListener("resize", scheduleRepaint);
-      grid?.removeEventListener("transitionend", onTransitionEnd);
+      document.removeEventListener("transitionend", onTransitionEnd, transitionCapture);
       observerRef.current?.disconnect();
       observerRef.current = null;
       if (frameRef.current !== null) {
@@ -426,37 +449,20 @@ export function SpotlightCard({
     const reducedQuery = window.matchMedia(REDUCED_MOTION);
     const finePointer = window.matchMedia(FINE_POINTER);
 
-    // Read in the capture phase, so a handler inside the card cannot hide a press or its release.
-    const onPointer = (event: PointerEvent) => {
-      if (isTouch(event) || reducedQuery.matches || !finePointer.matches) {
-        return;
-      }
-      paintCardAtClient(card, event.clientX, event.clientY, event.buttons !== 0);
-    };
     const onClear = () => {
       clearCardSpotlight(card);
     };
-    const onPointerExit = (event: PointerEvent) => {
-      if (!isTouch(event)) {
-        onClear();
+    const stopListening = listenToPointer((event) => {
+      if (reducedQuery.matches || !finePointer.matches) {
+        return;
       }
-    };
-
-    const capture = { capture: true, passive: true };
-    window.addEventListener("pointermove", onPointer, capture);
-    window.addEventListener("pointerdown", onPointer, capture);
-    window.addEventListener("pointerup", onPointer, capture);
-    window.addEventListener("pointercancel", onPointerExit, capture);
-    document.documentElement.addEventListener("pointerleave", onPointerExit);
+      paintCardAtClient(card, event.clientX, event.clientY, event.buttons !== 0);
+    }, onClear);
     reducedQuery.addEventListener("change", onClear);
     finePointer.addEventListener("change", onClear);
 
     return () => {
-      window.removeEventListener("pointermove", onPointer, capture);
-      window.removeEventListener("pointerdown", onPointer, capture);
-      window.removeEventListener("pointerup", onPointer, capture);
-      window.removeEventListener("pointercancel", onPointerExit, capture);
-      document.documentElement.removeEventListener("pointerleave", onPointerExit);
+      stopListening();
       reducedQuery.removeEventListener("change", onClear);
       finePointer.removeEventListener("change", onClear);
     };

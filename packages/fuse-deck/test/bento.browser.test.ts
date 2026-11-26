@@ -80,6 +80,7 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
       ["mount", "blank"],
       ["grow", "blank"],
       ["stepped", "blank"],
+      ["revealed", "blank"],
       ["contents", "blank"],
       ["role", "center"],
     ] as const) {
@@ -322,6 +323,18 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
           ");",
         ]
       )
+    );
+
+    // The whole grid inside one step, so the reveal moves it 10 canvas pixels up without resizing it.
+    await writeFile(
+      path.join(deckDir, "slides", "revealed.mdx"),
+      roomySlide([
+        "<Step>",
+        "  <Bento columns={2}>",
+        '    <SpotlightCard title="Revealed"><div>R</div></SpotlightCard>',
+        "  </Bento>",
+        "</Step>",
+      ])
     );
 
     for (const [id, name, file] of [
@@ -639,10 +652,91 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       await page.mouse.down();
       await expect.poll(() => spot(left, "--deck-spot-press")).toBe(1);
+      // No move follows the release, so only the release itself can clear the press.
       await page.mouse.up();
-      await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2);
       await expect.poll(() => spot(left, "--deck-spot-press")).toBe(0);
       expect(await spot(left, "--deck-spot-alpha")).toBe(1);
+    });
+  });
+
+  it("releases a press the pointer cancels on a standalone card", async () => {
+    await onSlide("standalone", async (page) => {
+      const solo = page.locator(".deck-spotlight-card", { hasText: "Standalone" });
+      const box = await solo.boundingBox();
+      expect(box).not.toBeNull();
+      if (box === null) {
+        return;
+      }
+      const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      await page.mouse.move(point.x, point.y);
+      await page.mouse.down();
+      try {
+        await expect.poll(() => spot(solo, "--deck-spot-press")).toBe(1);
+        await solo.evaluate((element, { x, y }) => {
+          element.dispatchEvent(
+            new PointerEvent("pointercancel", { bubbles: true, pointerType: "mouse", clientX: x, clientY: y })
+          );
+        }, point);
+        await expect.poll(() => spot(solo, "--deck-spot-press")).toBe(0);
+      } finally {
+        await page.mouse.up();
+      }
+    });
+  });
+
+  it("releases a press on a standalone card whose pointerup a button in it keeps from bubbling", async () => {
+    await onSlide("standalone", async (page) => {
+      const solo = page.locator(".deck-spotlight-card", { hasText: "Standalone" });
+      await solo.evaluate((element) => {
+        const hold = document.createElement("button");
+        hold.type = "button";
+        hold.textContent = "Hold";
+        hold.addEventListener("pointerup", (event) => {
+          event.stopPropagation();
+        });
+        element.querySelector(".deck-spotlight-content")?.append(hold);
+      });
+      const box = await solo.getByRole("button", { name: "Hold" }).boundingBox();
+      expect(box).not.toBeNull();
+      if (box === null) {
+        return;
+      }
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await expect.poll(() => spot(solo, "--deck-spot-press")).toBe(1);
+      // No move follows the release, so only the release itself can clear the press.
+      await page.mouse.up();
+      await expect.poll(() => spot(solo, "--deck-spot-press")).toBe(0);
+      expect(await spot(solo, "--deck-spot-alpha")).toBe(1);
+    });
+  });
+
+  it("leaves a standalone card unpressed by a touch while the mouse rests elsewhere", async () => {
+    await onSlide("standalone", async (page) => {
+      const solo = page.locator(".deck-spotlight-card", { hasText: "Standalone" });
+      const box = await solo.boundingBox();
+      expect(box).not.toBeNull();
+      if (box === null) {
+        return;
+      }
+      // The viewport's corner lies far outside the centred card's border glow.
+      await page.mouse.move(2, 2);
+      const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      // The listeners run while the event dispatches, so the readings below follow it.
+      await solo.evaluate((element, { x, y }) => {
+        element.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            pointerType: "touch",
+            isPrimary: true,
+            buttons: 1,
+            clientX: x,
+            clientY: y,
+          })
+        );
+      }, point);
+      expect(await spot(solo, "--deck-spot-press")).toBe(0);
+      expect(await spot(solo, "--deck-spot-alpha")).toBe(0);
     });
   });
 
@@ -702,6 +796,26 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
       await page.keyboard.press("ArrowRight");
       await expect.poll(() => step.getAttribute("data-revealed")).toBe("");
       await expect.poll(() => spot(stepped, "--deck-spot-alpha")).toBe(1);
+    });
+  });
+
+  it("relights a tile a revealed step around the whole grid moves under the resting pointer", async () => {
+    await onSlide("revealed", async (page) => {
+      const grid = page.locator(".deck-bento");
+      const revealed = page.locator(".deck-spotlight-card", { hasText: "Revealed" });
+      const step = page.locator(".deck-step", { has: grid });
+      await grid.waitFor();
+      expect(await step.getAttribute("data-revealed")).toBeNull();
+
+      // Four canvas pixels above the tile's top edge while the step holds it 10 pixels down.
+      const { x, y, scale } = await frame(grid);
+      await page.mouse.move(x + 200 * scale, y - 4 * scale);
+      await expect.poll(() => spot(revealed, "--deck-spot-edge")).toBeGreaterThan(0);
+      expect(await spot(revealed, "--deck-spot-alpha")).toBeLessThan(1);
+
+      await page.keyboard.press("ArrowRight");
+      await expect.poll(() => step.getAttribute("data-revealed")).toBe("");
+      await expect.poll(() => spot(revealed, "--deck-spot-alpha")).toBe(1);
     });
   });
 
