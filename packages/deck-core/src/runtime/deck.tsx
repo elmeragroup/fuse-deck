@@ -15,6 +15,7 @@ import { bridgeParent, reportPosition, requestedPosition } from "./bridge.ts";
 import { ElmeraCover } from "./elmera-cover.tsx";
 import { LAYOUTS } from "./layouts.tsx";
 import type { ManifestEmbedder, MdxComponents } from "./manifest.ts";
+import { Metric, Metrics } from "./metrics.tsx";
 import { Morph } from "./morph.tsx";
 import { fromHash, moveForKey, moveTo, toHash } from "./position.ts";
 import type { Position } from "./position.ts";
@@ -32,6 +33,8 @@ const MDX_COMPONENTS = {
   ElmeraCover,
   Bento,
   SpotlightCard,
+  Metrics,
+  Metric,
 } satisfies MdxComponents;
 
 /** A slide, loaded. */

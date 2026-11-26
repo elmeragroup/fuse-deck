@@ -98,6 +98,18 @@ export const COMPONENTS: readonly DeckComponent[] = [
     summary:
       "Renders a neutral Fuse-token card surface with a soft radial spotlight and luminous border proximity ring. Works standalone or inside <Bento>. Accepts optional colSpan, rowSpan, title, description, active and spotlight props.",
   },
+  {
+    name: "Metrics",
+    usage: '<Metrics columns={4} dividers><Metric value="94" label="Components" /></Metrics>',
+    summary:
+      "Arranges <Metric> items in a horizontal band, equal-column grid or vertical stack. Optional columns is 2, 3 or 4 in row layout, optional direction is row or column (defaulting to row), optional dividers draws 1px structural hairlines, and optional size and align set defaults inherited by child <Metric> items.",
+  },
+  {
+    name: "Metric",
+    usage: '<Metric value="94" label="Components" detail="Forms, tables, dialogs and charts" />',
+    summary:
+      "Displays one headline figure with tabular numerals and optical display tracking, paired with an optional label and muted detail line. Works inside <Metrics>, <SpotlightCard>, <Split> or standalone. Optional size is compact, default or hero; optional align is start or center.",
+  },
 ];
 
 /**

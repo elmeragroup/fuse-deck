@@ -134,19 +134,26 @@ const DEEP_IMPORT = `try {
 }`;
 
 /** A consumer module that uses the components entry's values and types as documented. */
-const TYPED_CONSUMER = `import { Bento, SpotlightCard, Step } from "@elmeragroup/fuse-deck/components";
-import type { BentoCursor, BentoProps } from "@elmeragroup/fuse-deck/components";
+const TYPED_CONSUMER = `import { Bento, Metric, Metrics, SpotlightCard, Step } from "@elmeragroup/fuse-deck/components";
+import type { BentoCursor, BentoProps, MetricProps, MetricsProps } from "@elmeragroup/fuse-deck/components";
 
 const cursor: BentoCursor = { x: 180, y: 120, pressed: true };
 const layout: BentoProps = { columns: 3, rows: 2, gap: 24, spotlight: true, cursor };
+const band: MetricsProps = { columns: 4, dividers: true, size: "default", align: "start" };
+const item: MetricProps = { value: "94", label: "Components", detail: "Forms and charts" };
 
 export function Demo() {
   return (
-    <Bento {...layout}>
-      <SpotlightCard colSpan={2} title="Typed" description="Through exports">
-        <Step index="1">Revealed</Step>
-      </SpotlightCard>
-    </Bento>
+    <>
+      <Metrics {...band}>
+        <Metric {...item} />
+      </Metrics>
+      <Bento {...layout}>
+        <SpotlightCard colSpan={2} title="Typed" description="Through exports">
+          <Step index="1">Revealed</Step>
+        </SpotlightCard>
+      </Bento>
+    </>
   );
 }
 `;

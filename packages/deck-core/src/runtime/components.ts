@@ -7,6 +7,15 @@ export { Bento, SpotlightCard } from "./bento.tsx";
 export type { BentoCursor, BentoProps, SpotlightCardProps } from "./bento.tsx";
 export { ElmeraCover } from "./elmera-cover.tsx";
 export type { ElmeraCoverBackground, ElmeraCoverProps } from "./elmera-cover.tsx";
+export { Metric, Metrics } from "./metrics.tsx";
+export type {
+  MetricAlign,
+  MetricProps,
+  MetricsColumns,
+  MetricsDirection,
+  MetricSize,
+  MetricsProps,
+} from "./metrics.tsx";
 export { Morph } from "./morph.tsx";
 export type { MorphProps } from "./morph.tsx";
 export { Split } from "./split.tsx";
