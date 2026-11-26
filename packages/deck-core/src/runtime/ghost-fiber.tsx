@@ -1,5 +1,9 @@
 import { useEffect, useRef } from "react";
 
+import { createPortal } from "react-dom";
+
+import { useSlideBackdropHost } from "./slide-backdrop.tsx";
+
 type RGB = readonly [number, number, number];
 
 type Palette = {
@@ -602,12 +606,7 @@ function drawFrame(
   ctx.globalCompositeOperation = "source-over";
 }
 
-/**
- * Monochrome atmospheric ghost-fiber canvas rendered behind `<ElmeraCover>` when enabled.
- * Adapts to light and dark themes, matches the viewport aspect ratio edge-to-edge, pauses when
- * the document is hidden, and draws one calm static frame under `prefers-reduced-motion: reduce`.
- */
-export function GhostFiberBackground() {
+function GhostFiberCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const renderedStillRef = useRef<{
@@ -673,9 +672,7 @@ export function GhostFiberBackground() {
     let hasFrameSample = false;
     let tierIndex = 0;
     let avgFrameMs = 16.7;
-    let avgDrawMs = 4;
     let slowStreak = 0;
-    let fastStreak = 0;
 
     const stop = () => {
       if (frameId !== null) {
@@ -716,9 +713,8 @@ export function GhostFiberBackground() {
       drawFrame(ctx, glowCtx, glowCanvas, sprites, palette, elapsed, tiltX, tiltY, tier);
       const drawMs = performance.now() - drawStart;
 
-      // Adapt animated density when frame cadence or draw duration exceeds budget without oscillating.
+      // Step animated density down monotonically for the visit when draw duration or frame cadence exceeds budget.
       const clampedFrameMs = Math.min(120, rawFrameMs);
-      avgDrawMs = avgDrawMs * 0.65 + drawMs * 0.35;
       if (hasFrameSample) {
         avgFrameMs = avgFrameMs * 0.7 + clampedFrameMs * 0.3;
       }
@@ -726,29 +722,17 @@ export function GhostFiberBackground() {
 
       if (drawMs > 28 && tierIndex < ANIMATED_TIERS.length - 1) {
         tierIndex = Math.min(ANIMATED_TIERS.length - 1, tierIndex + 2);
-        avgDrawMs = drawMs * 0.5;
         avgFrameMs = clampedFrameMs * 0.6;
         slowStreak = 0;
-        fastStreak = 0;
       } else if (drawMs > 14 || avgFrameMs > 27) {
         slowStreak += 1;
-        fastStreak = 0;
         if (slowStreak >= 2 && tierIndex < ANIMATED_TIERS.length - 1) {
           tierIndex += 1;
-          avgDrawMs = drawMs * 0.7;
           avgFrameMs = clampedFrameMs * 0.75;
           slowStreak = 0;
         }
-      } else if (avgFrameMs < 19 && avgDrawMs < 6 && tierIndex > 0) {
-        fastStreak += 1;
-        slowStreak = 0;
-        if (fastStreak >= 30) {
-          tierIndex -= 1;
-          fastStreak = 0;
-        }
       } else {
         slowStreak = 0;
-        fastStreak = 0;
       }
 
       if (!reducedQuery.matches && !document.hidden) {
@@ -856,4 +840,21 @@ export function GhostFiberBackground() {
       <canvas ref={canvasRef} className="deck-elmera-cover-canvas" width={1280} height={BASE_HEIGHT} />
     </div>
   );
+}
+
+/**
+ * Monochrome atmospheric ghost-fiber canvas rendered behind `<ElmeraCover>` when enabled.
+ * Adapts to light and dark themes, matches the viewport aspect ratio edge-to-edge, pauses when
+ * the document is hidden, and draws one calm static frame under `prefers-reduced-motion: reduce`.
+ */
+export function GhostFiberBackground() {
+  const host = useSlideBackdropHost();
+  switch (host._tag) {
+    case "pending":
+      return null;
+    case "ready":
+      return createPortal(<GhostFiberCanvas />, host.element);
+    case "unmanaged":
+      return <GhostFiberCanvas />;
+  }
 }

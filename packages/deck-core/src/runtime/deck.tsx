@@ -17,6 +17,7 @@ import type { ManifestEmbedder, MdxComponents } from "./manifest.ts";
 import { Morph } from "./morph.tsx";
 import { fromHash, moveForKey, moveTo, toHash } from "./position.ts";
 import type { Position } from "./position.ts";
+import { SlideBackdrop } from "./slide-backdrop.tsx";
 import { Split } from "./split.tsx";
 import { RevealedSteps, Step } from "./step.tsx";
 import { Video } from "./video.tsx";
@@ -190,11 +191,13 @@ export function Deck({ deck }: { readonly deck: LoadedDeck }) {
             data-layout={slide.layout}
             aria-roledescription="slide"
             aria-label={slide.title ?? `Slide ${String(position.slide + 1)}`}>
-            <RevealedSteps value={position.step}>
-              <Layout>
-                <Content components={MDX_COMPONENTS} />
-              </Layout>
-            </RevealedSteps>
+            <SlideBackdrop>
+              <RevealedSteps value={position.step}>
+                <Layout>
+                  <Content components={MDX_COMPONENTS} />
+                </Layout>
+              </RevealedSteps>
+            </SlideBackdrop>
           </section>
         </ViewTransition>
       </div>
