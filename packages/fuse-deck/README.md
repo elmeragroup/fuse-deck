@@ -41,8 +41,10 @@ and the commands share their operations in deck-core's `deck-operations` and `to
 so a tool returns the same document as its command's `--json`. The skill shows how to register
 the server with an agent.
 
-The package exports no modules (`"exports": {}`). The bin and Vite reach `dist/` by file path, so a
-deep import such as `@elmeragroup/fuse-deck/dist/runtime/main.js` fails.
+The package's one public entry is `./components`: deck-local `.tsx` modules import the built-in
+runtime components and their types from `@elmeragroup/fuse-deck/components`. The bin and Vite
+reach the rest of `dist/` by file path, so a deep import such as
+`@elmeragroup/fuse-deck/dist/runtime/main.js` fails.
 
 ## Exit codes
 

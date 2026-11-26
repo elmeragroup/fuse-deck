@@ -4,10 +4,13 @@
  * outside that install, gives a slide a Fuse component, and runs `create`, `describe`, `slides add`,
  * `check --json` and `build` through the `fuse-deck` command npm installed. It starts `mcp` in the
  * deck, lists its tools over stdio and checks that it exits 0 when stdin ends. It checks that the
- * skill `describe` names exists, and that the package refuses a deep import. It then runs the built
- * page's classic bootstrap and checks the theme it applies before the module entry runs. Last, it
- * serves the deck with `dev`, renders both slides in Chromium, and stops the server with SIGINT. A
- * second `dev` starts with a slide that does not compile and must render it once it is repaired.
+ * skill `describe` names exists, and that the package refuses a deep import. It type-checks a
+ * consumer module that imports from `@elmeragroup/fuse-deck/components` with the workspace's
+ * TypeScript, through the package's `exports` and the React types the consumer installs, and checks
+ * that a module passing a wrong prop does not. It then runs the built page's classic bootstrap and
+ * checks the theme it applies before the module entry runs. Last, it serves the deck with `dev`,
+ * renders both slides in Chromium, and stops the server with SIGINT. A second `dev` starts with a
+ * slide that does not compile and must render it once it is repaired.
  *
  * Without a workspace, Fuse resolves to its built `dist` and React to the consumer's install, so
  * this is the check that fuse-deck's anchored `runnerImport` and its resolver work when installed.
@@ -41,6 +44,9 @@ class SmokeFailed extends Schema.TaggedError<SmokeFailed>()("SmokeFailed", {
 
 const packageRoot = path.resolve(import.meta.dirname, "..");
 
+/** deck-core, whose development install holds the React types the runtime is written against. */
+const deckCoreRoot = path.resolve(packageRoot, "..", "deck-core");
+
 /** Mirrors `minimumReleaseAge` in pnpm-workspace.yaml, so npm resolves what the lockfile could. */
 const RELEASE_AGE = Duration.minutes(4320);
 
@@ -61,8 +67,8 @@ const tarball = Effect.fn("tarball")(function* (root: string) {
   return path.join(directory, only);
 });
 
-/** Run a command to completion and return its stdout; a non-zero exit fails with its output. */
-const run = Effect.fn("run")(function* (command: string, args: readonly string[], cwd: string) {
+/** Run a command to completion and return what it printed and its exit code. */
+const exec = Effect.fn("exec")(function* (command: string, args: readonly string[], cwd: string) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const label = `${path.basename(command)} ${args.join(" ")}`;
   return yield* Effect.scoped(
@@ -81,16 +87,18 @@ const run = Effect.fn("run")(function* (command: string, args: readonly string[]
       yield* Console.log(
         `$ ${label}  (in ${cwd})\n${stdout}${stderr === "" ? "" : `[stderr]\n${stderr}`}[exit ${String(exitCode)}]`
       );
-      if (exitCode !== 0) {
-        return yield* new SmokeFailed({ message: `${label} exited ${String(exitCode)}:\n${stderr}` });
-      }
-      return stdout;
+      return { label, stdout, stderr, exitCode };
     })
-  ).pipe(
-    Effect.mapError((error) =>
-      error._tag === "SmokeFailed" ? error : new SmokeFailed({ message: `${label}: ${error.message}` })
-    )
-  );
+  ).pipe(Effect.mapError((error) => new SmokeFailed({ message: `${label}: ${error.message}` })));
+});
+
+/** Run a command to completion and return its stdout; a non-zero exit fails with its output. */
+const run = Effect.fn("run")(function* (command: string, args: readonly string[], cwd: string) {
+  const { label, stdout, stderr, exitCode } = yield* exec(command, args, cwd);
+  if (exitCode !== 0) {
+    return yield* new SmokeFailed({ message: `${label} exited ${String(exitCode)}:\n${stderr}` });
+  }
+  return stdout;
 });
 
 function text<E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> {
@@ -124,6 +132,81 @@ const DEEP_IMPORT = `try {
 } catch (error) {
   process.exit(error.code === "ERR_PACKAGE_PATH_NOT_EXPORTED" ? 0 : 1);
 }`;
+
+/** A consumer module that uses the components entry's values and types as documented. */
+const TYPED_CONSUMER = `import { Bento, SpotlightCard, Step } from "@elmeragroup/fuse-deck/components";
+import type { BentoCursor, BentoProps } from "@elmeragroup/fuse-deck/components";
+
+const cursor: BentoCursor = { x: 180, y: 120, pressed: true };
+const layout: BentoProps = { columns: 3, rows: 2, gap: 24, spotlight: true, cursor };
+
+export function Demo() {
+  return (
+    <Bento {...layout}>
+      <SpotlightCard colSpan={2} title="Typed" description="Through exports">
+        <Step index="1">Revealed</Step>
+      </SpotlightCard>
+    </Bento>
+  );
+}
+`;
+
+/** A consumer module passing a row count `<Bento>` does not accept. */
+const WRONG_PROP_CONSUMER = `import { Bento } from "@elmeragroup/fuse-deck/components";
+
+export function Demo() {
+  return <Bento rows={1} />;
+}
+`;
+
+/**
+ * Type-check each consumer module on its own with the workspace's TypeScript, in strict mode and
+ * with library checks on, so the shipped declarations resolve through the installed package's
+ * `exports` alone. The documented module must pass and the wrong prop must fail with TS2322.
+ */
+const typeCheckComponents = Effect.fn("typeCheckComponents")(function* (consumer: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const declarations = yield* fs.readFileString(
+    path.join(consumer, "node_modules", "@elmeragroup", "fuse-deck", "dist", "runtime", "components.d.ts")
+  );
+  if (declarations.includes("@elmeragroup/deck-core")) {
+    return yield* new SmokeFailed({ message: "components.d.ts imports the private deck-core package." });
+  }
+  const tsc = path.join(packageRoot, "node_modules", "typescript", "bin", "tsc");
+  const check = (file: string) =>
+    exec(
+      process.execPath,
+      [
+        tsc,
+        "--strict",
+        "--noEmit",
+        "--jsx",
+        "react-jsx",
+        "--module",
+        "preserve",
+        "--moduleResolution",
+        "bundler",
+        "--target",
+        "es2022",
+        file,
+      ],
+      consumer
+    );
+  yield* fs.writeFileString(path.join(consumer, "typed.tsx"), TYPED_CONSUMER);
+  yield* fs.writeFileString(path.join(consumer, "wrong-prop.tsx"), WRONG_PROP_CONSUMER);
+  const typed = yield* check("typed.tsx");
+  if (typed.exitCode !== 0) {
+    return yield* new SmokeFailed({
+      message: `The components consumer did not type-check:\n${typed.stdout}${typed.stderr}`,
+    });
+  }
+  const wrong = yield* check("wrong-prop.tsx");
+  if (wrong.exitCode === 0 || !wrong.stdout.includes("TS2322")) {
+    return yield* new SmokeFailed({
+      message: `A wrong <Bento> prop did not fail with TS2322 (exit ${String(wrong.exitCode)}):\n${wrong.stdout}${wrong.stderr}`,
+    });
+  }
+});
 
 /** What the bootstrap does to the document when it runs as a classic script. */
 function runBootstrap(source: string, stored: string | null, systemDark: boolean): string | null {
@@ -160,8 +243,9 @@ const smoke = Effect.gen(function* () {
     )).trim()
   );
 
-  // The consumer installs the React this workspace tests against.
+  // The consumer installs the React, and the React types, this workspace tests against.
   const react = yield* installedVersion("react");
+  const reactTypes = yield* installedVersion("@types/react", deckCoreRoot);
   yield* fs.writeFileString(
     path.join(consumer, "package.json"),
     yield* encodeJson({
@@ -172,6 +256,7 @@ const smoke = Effect.gen(function* () {
         "@elmeragroup/fuse-deck": `file:${deckTarball}`,
         react,
         "react-dom": react,
+        "@types/react": reactTypes,
       },
     })
   );
@@ -211,6 +296,7 @@ const smoke = Effect.gen(function* () {
     });
   }
   yield* run(process.execPath, ["--input-type=module", "--eval", DEEP_IMPORT], consumer);
+  yield* typeCheckComponents(consumer);
   yield* expectDocument(yield* fuseDeck(["slides", "add", "intro", "--json"], deck), "SlideAdded");
   yield* fs.writeFileString(path.join(deck, "slides", "intro.mdx"), INTRO);
   yield* expectDocument(yield* fuseDeck(["check", "--json"], deck), "DeckChecked");
@@ -254,7 +340,7 @@ const smoke = Effect.gen(function* () {
   }
   yield* serveAndRender(bin, deck);
   yield* Console.log(
-    "Packed smoke passed: create, describe, slides add, check, build, mcp and dev ran through the installed fuse-deck command, describe named the installed skill, a deep import failed, the bootstrap applied each scheme, the dev server rendered both slides in Chromium, and a second dev server recovered from a broken first load."
+    "Packed smoke passed: create, describe, slides add, check, build, mcp and dev ran through the installed fuse-deck command, describe named the installed skill, a deep import failed, a consumer of the components entry type-checked and a wrong prop did not, the bootstrap applied each scheme, the dev server rendered both slides in Chromium, and a second dev server recovered from a broken first load."
   );
 }).pipe(Effect.scoped);
 
@@ -521,10 +607,10 @@ async function recoverFromBrokenLoad(
   }
 }
 
-/** The version of a package this workspace installed for fuse-deck. */
-const installedVersion = Effect.fn("installedVersion")(function* (name: string) {
+/** The version of a package this workspace installed for the package at `root`, fuse-deck by default. */
+const installedVersion = Effect.fn("installedVersion")(function* (name: string, root: string = packageRoot) {
   const fs = yield* FileSystem.FileSystem;
-  const manifest = yield* fs.readFileString(path.join(packageRoot, "node_modules", name, "package.json"));
+  const manifest = yield* fs.readFileString(path.join(root, "node_modules", name, "package.json"));
   const { version } = yield* Schema.decodeEffect(
     Schema.fromJsonString(Schema.Struct({ version: Schema.String }))
   )(manifest);

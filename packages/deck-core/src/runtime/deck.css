@@ -346,8 +346,12 @@ body {
   --deck-spot-edge: 0;
   --deck-spot-press: 0;
   --deck-spot-radius: 280px;
-  --deck-spot-tint: oklch(0 0 0 / 0.048);
-  --deck-spot-rim: oklch(0 0 0 / 0.24);
+  /*
+   * A light rests at 1 / 1.45 and its border at 1 / 1.35 of full opacity, so a press can brighten
+   * them; the tint and rim carry the inverse, which keeps the resting intensity at 0.048 and 0.24.
+   */
+  --deck-spot-tint: oklch(0 0 0 / 0.0696);
+  --deck-spot-rim: oklch(0 0 0 / 0.324);
   position: relative;
   display: flex;
   flex-direction: column;
@@ -356,19 +360,20 @@ body {
   overflow: hidden;
   border-radius: 20px;
   background: var(--card, var(--background));
+  color: var(--card-foreground, var(--foreground));
   box-shadow:
-    0 0 0 1px oklch(0 0 0 / 0.07),
-    0 1px 2px -1px oklch(0 0 0 / 0.05),
+    0 0 0 1px var(--card-border, oklch(0 0 0 / 0.07)),
+    0 1px 2px -1px var(--card-shadow, oklch(0 0 0 / 0.05)),
     0 10px 24px -16px oklch(0 0 0 / 0.12);
   transition: box-shadow 220ms var(--deck-ease-out);
 }
 
 [data-theme="dark"] .deck-spotlight-card {
-  --deck-spot-tint: oklch(1 0 0 / 0.075);
-  --deck-spot-rim: oklch(1 0 0 / 0.34);
+  --deck-spot-tint: oklch(1 0 0 / 0.1088);
+  --deck-spot-rim: oklch(1 0 0 / 0.459);
   background: color-mix(in oklch, var(--card, var(--background)) 92%, white 8%);
   box-shadow:
-    0 0 0 1px oklch(1 0 0 / 0.09),
+    0 0 0 1px var(--card-border, oklch(1 0 0 / 0.09)),
     0 16px 32px -20px oklch(0 0 0 / 0.55);
 }
 
@@ -405,6 +410,19 @@ body {
   grid-row: span 3;
 }
 
+/* A tile spans at most the tracks its <Bento> declares, so it never adds implicit ones. */
+.deck-bento[data-columns="2"] > .deck-spotlight-card:is([data-col-span="3"], [data-col-span="4"]) {
+  grid-column: span 2;
+}
+
+.deck-bento[data-columns="3"] > .deck-spotlight-card[data-col-span="4"] {
+  grid-column: span 3;
+}
+
+.deck-bento[data-rows="2"] > .deck-spotlight-card[data-row-span="3"] {
+  grid-row: span 2;
+}
+
 .deck-spotlight-light,
 .deck-spotlight-border {
   position: absolute;
@@ -420,7 +438,7 @@ body {
     var(--deck-spot-tint) 0%,
     transparent 72%
   );
-  opacity: calc(var(--deck-spot-alpha) * (1 + var(--deck-spot-press) * 0.45));
+  opacity: calc(var(--deck-spot-alpha) * (1 + var(--deck-spot-press) * 0.45) / 1.45);
   transition: opacity 200ms var(--deck-ease-out);
 }
 
@@ -432,7 +450,7 @@ body {
     var(--deck-spot-rim) 0%,
     transparent 74%
   );
-  opacity: calc(var(--deck-spot-edge) * (1 + var(--deck-spot-press) * 0.35));
+  opacity: calc(var(--deck-spot-edge) * (1 + var(--deck-spot-press) * 0.35) / 1.35);
   transition: opacity 180ms var(--deck-ease-out);
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
@@ -469,7 +487,7 @@ body {
   font-weight: var(--font-weight-semibold, 600);
   letter-spacing: -0.015em;
   line-height: 1.25;
-  color: var(--foreground);
+  color: var(--card-foreground, var(--foreground));
 }
 
 .deck-spotlight-description {

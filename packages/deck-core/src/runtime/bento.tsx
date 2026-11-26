@@ -59,10 +59,30 @@ const BentoContext = createContext<BentoContextValue | null>(null);
 
 const BORDER_PROXIMITY = 150;
 
+const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
+const FINE_POINTER = "(hover: hover) and (pointer: fine)";
+
+/** A point in viewport coordinates, as pointer events and `getBoundingClientRect` give them. */
+type ClientPoint = {
+  readonly clientX: number;
+  readonly clientY: number;
+};
+
+/** What lights a grid's cards: a viewport point and whether it presses. */
+type SpotlightInput = ClientPoint & {
+  readonly pressed: boolean;
+};
+
 function clearCardSpotlight(card: HTMLDivElement): void {
   card.style.setProperty("--deck-spot-alpha", "0");
   card.style.setProperty("--deck-spot-edge", "0");
   card.style.setProperty("--deck-spot-press", "0");
+}
+
+function clearCards(cards: Iterable<CardEntry>): void {
+  for (const entry of cards) {
+    clearCardSpotlight(entry.element);
+  }
 }
 
 function paintCardSpotlight(
@@ -94,6 +114,75 @@ function paintCardSpotlight(
 }
 
 /**
+ * Paints `card` from viewport coordinates, mapped into the card's own CSS pixels so the scaled
+ * deck canvas does not shift the light.
+ */
+function paintCardAtClient(card: HTMLDivElement, clientX: number, clientY: number, pressed: boolean): void {
+  const rect = card.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) {
+    return;
+  }
+  const width = card.offsetWidth;
+  const height = card.offsetHeight;
+  paintCardSpotlight(
+    card,
+    (clientX - rect.left) * (width / rect.width),
+    (clientY - rect.top) * (height / rect.height),
+    width,
+    height,
+    pressed
+  );
+}
+
+/** The viewport point of `x`, `y` in `element`'s own CSS pixels, or null while it has no size. */
+function clientPointIn(element: HTMLElement, x: number, y: number): ClientPoint | null {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0 || element.offsetWidth <= 0 || element.offsetHeight <= 0) {
+    return null;
+  }
+  return {
+    clientX: rect.left + x * (rect.width / element.offsetWidth),
+    clientY: rect.top + y * (rect.height / element.offsetHeight),
+  };
+}
+
+/** Whether a viewport point lies within `BORDER_PROXIMITY` of `element`'s CSS pixels on each axis. */
+function isNear(element: HTMLElement, point: ClientPoint): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0 || element.offsetWidth <= 0 || element.offsetHeight <= 0) {
+    return false;
+  }
+  const marginX = BORDER_PROXIMITY * (rect.width / element.offsetWidth);
+  const marginY = BORDER_PROXIMITY * (rect.height / element.offsetHeight);
+  return (
+    point.clientX >= rect.left - marginX &&
+    point.clientX <= rect.right + marginX &&
+    point.clientY >= rect.top - marginY &&
+    point.clientY <= rect.bottom + marginY
+  );
+}
+
+/**
+ * The input that lights `grid`'s cards: the real pointer while it is a fine pointer near the grid,
+ * otherwise the scripted cursor, which works without a fine pointer. Null when neither is active.
+ */
+function currentInput(
+  grid: HTMLElement,
+  pointer: ClientPoint | null,
+  pressed: boolean,
+  cursor: BentoCursor | null
+): SpotlightInput | null {
+  if (pointer !== null && window.matchMedia(FINE_POINTER).matches && isNear(grid, pointer)) {
+    return { ...pointer, pressed };
+  }
+  if (cursor === null) {
+    return null;
+  }
+  const point = clientPointIn(grid, cursor.x, cursor.y);
+  return point === null ? null : { ...point, pressed: cursor.pressed === true };
+}
+
+/**
  * Neutral asymmetric bento grid for composing `<SpotlightCard>` tiles on a slide. Tracks fine
  * pointer movement and optional programmatic cursor coordinates to coordinate surface spotlights
  * and border proximity glow across neighboring cards.
@@ -109,14 +198,54 @@ export function Bento({
 }: BentoProps) {
   const gridRef = useRef<HTMLDivElement>(null);
   const cardsRef = useRef<Set<CardEntry>>(new Set());
-  const pointerActiveRef = useRef(false);
+  // The latest inputs, read by `repaint` whichever event runs it.
+  const spotlightRef = useRef(spotlight);
+  const cursorRef = useRef(cursor);
+  const pointerRef = useRef<ClientPoint | null>(null);
+  const pressedRef = useRef(false);
+  // Whether a card may still hold light, so an idle pointer elsewhere on the page writes nothing.
+  const litRef = useRef(false);
 
-  const registerCard = useCallback((entry: CardEntry) => {
-    cardsRef.current.add(entry);
-    return () => {
-      cardsRef.current.delete(entry);
-    };
+  /**
+   * Paints every card from the current input: the real pointer while it is a fine pointer near the
+   * grid, otherwise the scripted cursor. Clears every card when the spotlight is off, motion is
+   * reduced or neither input is active.
+   */
+  const repaint = useCallback(() => {
+    const grid = gridRef.current;
+    const cards = cardsRef.current;
+    const input =
+      grid === null || !spotlightRef.current || window.matchMedia(REDUCED_MOTION).matches
+        ? null
+        : currentInput(grid, pointerRef.current, pressedRef.current, cursorRef.current);
+    if (input === null) {
+      if (litRef.current) {
+        clearCards(cards);
+        litRef.current = false;
+      }
+      return;
+    }
+    litRef.current = true;
+    for (const entry of cards) {
+      if (entry.enabled) {
+        paintCardAtClient(entry.element, input.clientX, input.clientY, input.pressed);
+      } else {
+        clearCardSpotlight(entry.element);
+      }
+    }
   }, []);
+
+  const registerCard = useCallback(
+    (entry: CardEntry) => {
+      cardsRef.current.add(entry);
+      repaint();
+      return () => {
+        cardsRef.current.delete(entry);
+        repaint();
+      };
+    },
+    [repaint]
+  );
 
   const contextValue = useMemo<BentoContextValue>(
     () => ({
@@ -126,157 +255,65 @@ export function Bento({
     [spotlight, registerCard]
   );
 
-  // Drive coordinated card spotlights from real fine-pointer movement.
+  // The props that move the input or the cards; the layout ones reflow the grid under the cursor.
   useEffect(() => {
-    const grid = gridRef.current;
-    if (grid === null || !spotlight) {
-      for (const entry of cardsRef.current) {
-        clearCardSpotlight(entry.element);
-      }
-      return;
-    }
+    spotlightRef.current = spotlight;
+    cursorRef.current = cursor;
+    repaint();
+  }, [spotlight, cursor, columns, rows, gap, repaint]);
 
-    const reducedQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)");
-    let pressed = false;
+  // The real pointer, the media queries and the window size.
+  useEffect(() => {
+    const reducedQuery = window.matchMedia(REDUCED_MOTION);
+    const finePointer = window.matchMedia(FINE_POINTER);
+    let frame: number | null = null;
 
-    const paintFromClient = (clientX: number, clientY: number) => {
-      if (reducedQuery.matches || !finePointer.matches) {
-        return;
+    const onPointer = (event: PointerEvent) => {
+      pointerRef.current = { clientX: event.clientX, clientY: event.clientY };
+      if (event.type === "pointerdown") {
+        pressedRef.current = true;
+      } else if (event.type === "pointerup") {
+        pressedRef.current = false;
       }
-      for (const entry of cardsRef.current) {
-        if (!entry.enabled) {
-          clearCardSpotlight(entry.element);
-          continue;
-        }
-        const rect = entry.element.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) {
-          continue;
-        }
-        const scaleX = entry.element.offsetWidth / rect.width;
-        const scaleY = entry.element.offsetHeight / rect.height;
-        const localX = (clientX - rect.left) * scaleX;
-        const localY = (clientY - rect.top) * scaleY;
-        paintCardSpotlight(
-          entry.element,
-          localX,
-          localY,
-          entry.element.offsetWidth,
-          entry.element.offsetHeight,
-          pressed
-        );
-      }
+      repaint();
     };
-
-    const clearAll = () => {
-      pointerActiveRef.current = false;
-      pressed = false;
-      for (const entry of cardsRef.current) {
-        clearCardSpotlight(entry.element);
-      }
-    };
-
-    const onPointerMove = (event: PointerEvent) => {
-      if (reducedQuery.matches || !finePointer.matches) {
-        return;
-      }
-      const gridRect = grid.getBoundingClientRect();
-      const nearGrid =
-        event.clientX >= gridRect.left - BORDER_PROXIMITY &&
-        event.clientX <= gridRect.right + BORDER_PROXIMITY &&
-        event.clientY >= gridRect.top - BORDER_PROXIMITY &&
-        event.clientY <= gridRect.bottom + BORDER_PROXIMITY;
-      if (!nearGrid) {
-        if (pointerActiveRef.current) {
-          clearAll();
-        }
-        return;
-      }
-      pointerActiveRef.current = true;
-      paintFromClient(event.clientX, event.clientY);
-    };
-
-    const onPointerDown = (event: PointerEvent) => {
-      if (!pointerActiveRef.current) {
-        return;
-      }
-      pressed = true;
-      paintFromClient(event.clientX, event.clientY);
-    };
-
-    const onPointerUp = (event: PointerEvent) => {
-      if (!pressed) {
-        return;
-      }
-      pressed = false;
-      if (pointerActiveRef.current) {
-        paintFromClient(event.clientX, event.clientY);
-      }
-    };
-
     const onPointerLeave = () => {
-      if (pointerActiveRef.current) {
-        clearAll();
+      pointerRef.current = null;
+      pressedRef.current = false;
+      repaint();
+    };
+    // The deck applies a new canvas scale in the render after `resize`, so measure a frame later.
+    const onResize = () => {
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
       }
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        repaint();
+      });
     };
 
-    window.addEventListener("pointermove", onPointerMove, { passive: true });
-    window.addEventListener("pointerdown", onPointerDown, { passive: true });
-    window.addEventListener("pointerup", onPointerUp, { passive: true });
+    window.addEventListener("pointermove", onPointer, { passive: true });
+    window.addEventListener("pointerdown", onPointer, { passive: true });
+    window.addEventListener("pointerup", onPointer, { passive: true });
     document.documentElement.addEventListener("pointerleave", onPointerLeave);
-    reducedQuery.addEventListener("change", clearAll);
+    reducedQuery.addEventListener("change", repaint);
+    finePointer.addEventListener("change", repaint);
+    window.addEventListener("resize", onResize);
 
     return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointermove", onPointer);
+      window.removeEventListener("pointerdown", onPointer);
+      window.removeEventListener("pointerup", onPointer);
       document.documentElement.removeEventListener("pointerleave", onPointerLeave);
-      reducedQuery.removeEventListener("change", clearAll);
+      reducedQuery.removeEventListener("change", repaint);
+      finePointer.removeEventListener("change", repaint);
+      window.removeEventListener("resize", onResize);
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
+      }
     };
-  }, [spotlight]);
-
-  // Drive coordinated card spotlights from an optional programmatic cursor (e.g. a stageshow walkthrough).
-  useEffect(() => {
-    const grid = gridRef.current;
-    if (grid === null || !spotlight || pointerActiveRef.current) {
-      return;
-    }
-    if (cursor === null) {
-      for (const entry of cardsRef.current) {
-        clearCardSpotlight(entry.element);
-      }
-      return;
-    }
-    const reducedQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    if (reducedQuery.matches) {
-      return;
-    }
-
-    const gridRect = grid.getBoundingClientRect();
-    if (gridRect.width <= 0 || gridRect.height <= 0) {
-      return;
-    }
-    const scaleX = grid.offsetWidth / gridRect.width;
-    const scaleY = grid.offsetHeight / gridRect.height;
-
-    for (const entry of cardsRef.current) {
-      if (!entry.enabled) {
-        clearCardSpotlight(entry.element);
-        continue;
-      }
-      const cardRect = entry.element.getBoundingClientRect();
-      const cardOffsetX = (cardRect.left - gridRect.left) * scaleX;
-      const cardOffsetY = (cardRect.top - gridRect.top) * scaleY;
-      paintCardSpotlight(
-        entry.element,
-        cursor.x - cardOffsetX,
-        cursor.y - cardOffsetY,
-        entry.element.offsetWidth,
-        entry.element.offsetHeight,
-        cursor.pressed === true
-      );
-    }
-  }, [spotlight, cursor]);
+  }, [repaint]);
 
   const gridStyle: CSSProperties = { gap: `${String(gap)}px` };
 
@@ -327,21 +364,15 @@ export function SpotlightCard({
       return;
     }
 
-    const reducedQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const finePointer = window.matchMedia("(hover: hover) and (pointer: fine)");
+    const reducedQuery = window.matchMedia(REDUCED_MOTION);
+    const finePointer = window.matchMedia(FINE_POINTER);
     let pressed = false;
 
     const paintFromClient = (clientX: number, clientY: number) => {
       if (reducedQuery.matches || !finePointer.matches) {
         return;
       }
-      const rect = card.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) {
-        return;
-      }
-      const localX = (clientX - rect.left) * (card.offsetWidth / rect.width);
-      const localY = (clientY - rect.top) * (card.offsetHeight / rect.height);
-      paintCardSpotlight(card, localX, localY, card.offsetWidth, card.offsetHeight, pressed);
+      paintCardAtClient(card, clientX, clientY, pressed);
     };
 
     const onPointerMove = (event: PointerEvent) => {
@@ -365,6 +396,7 @@ export function SpotlightCard({
     window.addEventListener("pointerup", onPointerUp, { passive: true });
     document.documentElement.addEventListener("pointerleave", onClear);
     reducedQuery.addEventListener("change", onClear);
+    finePointer.addEventListener("change", onClear);
 
     return () => {
       window.removeEventListener("pointermove", onPointerMove);
@@ -372,11 +404,12 @@ export function SpotlightCard({
       window.removeEventListener("pointerup", onPointerUp);
       document.documentElement.removeEventListener("pointerleave", onClear);
       reducedQuery.removeEventListener("change", onClear);
+      finePointer.removeEventListener("change", onClear);
     };
   }, [bento, enabled]);
 
-  const hasFooter =
-    (title !== undefined && title !== "") || (description !== undefined && description !== "");
+  const hasTitle = title !== undefined && title !== "";
+  const hasDescription = description !== undefined && description !== "";
 
   return (
     <div
@@ -389,12 +422,10 @@ export function SpotlightCard({
       <span className="deck-spotlight-light" aria-hidden="true" />
       <span className="deck-spotlight-border" aria-hidden="true" />
       <div className="deck-spotlight-content">{children}</div>
-      {hasFooter && (
+      {(hasTitle || hasDescription) && (
         <div className="deck-spotlight-footer">
-          {title !== undefined && title !== "" && <div className="deck-spotlight-title">{title}</div>}
-          {description !== undefined && description !== "" && (
-            <p className="deck-spotlight-description">{description}</p>
-          )}
+          {hasTitle && <div className="deck-spotlight-title">{title}</div>}
+          {hasDescription && <p className="deck-spotlight-description">{description}</p>}
         </div>
       )}
     </div>

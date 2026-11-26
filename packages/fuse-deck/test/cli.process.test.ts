@@ -395,6 +395,24 @@ describe("fuse-deck --json", () => {
     expect(oneDocument(fuseDeck(deck, ["check", "--json"]), Tagged)._tag).toBe("DeckChecked");
   });
 
+  it("describes <Bento> and <SpotlightCard> with their usages", () => {
+    const deck = createDeck();
+    const vocabulary = Schema.decodeSync(
+      Schema.fromJsonString(
+        Schema.TaggedStruct("DeckVocabulary", {
+          components: Schema.Array(Schema.Struct({ name: Schema.String, usage: Schema.String })),
+        })
+      )
+    )(fuseDeck(deck, ["describe", "--json"]).stdout);
+    const usages = vocabulary.components
+      .filter(({ name }) => name === "Bento" || name === "SpotlightCard")
+      .map(({ name, usage }) => ({ name, usage }));
+    expect(usages).toEqual([
+      { name: "Bento", usage: "<Bento columns={4} rows={3}><SpotlightCard>…</SpotlightCard></Bento>" },
+      { name: "SpotlightCard", usage: '<SpotlightCard colSpan={2} title="Button">…</SpotlightCard>' },
+    ]);
+  });
+
   it("dev prints one readiness document once the server listens on 127.0.0.1, and stops serving on SIGINT", async () => {
     const deck = createDeck();
     const child = spawn(process.execPath, [BIN, "dev", "--json"], {
