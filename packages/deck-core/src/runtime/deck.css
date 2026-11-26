@@ -380,7 +380,7 @@ body {
 .deck-spotlight-card[data-active] {
   box-shadow:
     0 0 0 1px oklch(0 0 0 / 0.16),
-    0 2px 4px -1px oklch(0 0 0 / 0.06),
+    0 2px 4px -1px var(--card-shadow, oklch(0 0 0 / 0.06)),
     0 14px 30px -16px oklch(0 0 0 / 0.18);
 }
 
@@ -408,19 +408,6 @@ body {
 
 .deck-spotlight-card[data-row-span="3"] {
   grid-row: span 3;
-}
-
-/* A tile spans at most the tracks its <Bento> declares, so it never adds implicit ones. */
-.deck-bento[data-columns="2"] > .deck-spotlight-card:is([data-col-span="3"], [data-col-span="4"]) {
-  grid-column: span 2;
-}
-
-.deck-bento[data-columns="3"] > .deck-spotlight-card[data-col-span="4"] {
-  grid-column: span 3;
-}
-
-.deck-bento[data-rows="2"] > .deck-spotlight-card[data-row-span="3"] {
-  grid-row: span 2;
 }
 
 .deck-spotlight-light,

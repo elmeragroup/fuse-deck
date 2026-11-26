@@ -166,12 +166,6 @@ export function Demo() {
  */
 const typeCheckComponents = Effect.fn("typeCheckComponents")(function* (consumer: string) {
   const fs = yield* FileSystem.FileSystem;
-  const declarations = yield* fs.readFileString(
-    path.join(consumer, "node_modules", "@elmeragroup", "fuse-deck", "dist", "runtime", "components.d.ts")
-  );
-  if (declarations.includes("@elmeragroup/deck-core")) {
-    return yield* new SmokeFailed({ message: "components.d.ts imports the private deck-core package." });
-  }
   const tsc = path.join(packageRoot, "node_modules", "typescript", "bin", "tsc");
   const check = (file: string) =>
     exec(

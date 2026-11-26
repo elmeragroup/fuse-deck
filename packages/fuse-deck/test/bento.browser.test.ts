@@ -78,6 +78,10 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
       ["spans", "blank"],
       ["toggle", "blank"],
       ["mount", "blank"],
+      ["grow", "blank"],
+      ["stepped", "blank"],
+      ["contents", "blank"],
+      ["role", "center"],
     ] as const) {
       fuseDeck(deckDir, ["slides", "add", id, "--layout", layout]);
     }
@@ -180,6 +184,32 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
       ])
     );
 
+    // A wrapper with no box leaves the card a grid item that the grid's own child rules cannot reach.
+    await writeFile(
+      path.join(deckDir, "slides", "contents.mdx"),
+      roomySlide([
+        "<Bento columns={2} rows={2}>",
+        '  <div style={{ display: "contents" }}>',
+        '    <SpotlightCard colSpan={4} rowSpan={3} title="Wrapped"><div>W</div></SpotlightCard>',
+        "  </div>",
+        "</Bento>",
+      ])
+    );
+
+    await writeFile(
+      path.join(deckDir, "slides", "role.mdx"),
+      [
+        "---",
+        "layout: center",
+        "---",
+        "",
+        '<div style={{ "--card-shadow": "rgb(1, 2, 3)" }}>',
+        '  <SpotlightCard title="Role" active><div style={{ padding: "32px" }}>Body</div></SpotlightCard>',
+        "</div>",
+        "",
+      ].join("\n")
+    );
+
     await mkdir(path.join(deckDir, "components"), { recursive: true });
     await writeFile(
       path.join(deckDir, "components", "ImportedDemo.tsx"),
@@ -248,10 +278,58 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
       ])
     );
 
+    // In the grid's second column, 40 canvas pixels down: 249 right of a one-column first tile.
+    await writeFile(
+      path.join(deckDir, "components", "GrowDemo.tsx"),
+      component(
+        "GrowDemo",
+        [...reactImports, "const RIGHT: BentoCursor = { x: 900, y: 40 };"],
+        [
+          "const [wide, setWide] = useState(false);",
+          "return (",
+          `    ${roomy}`,
+          button("Widen tile", "() => setWide(true)"),
+          "      <Bento columns={2} cursor={RIGHT}>",
+          '        <SpotlightCard title="Grow" colSpan={wide ? 2 : 1}><div>G</div></SpotlightCard>',
+          '        <SpotlightCard title="Other"><div>O</div></SpotlightCard>',
+          "      </Bento>",
+          "    </div>",
+          ");",
+        ]
+      )
+    );
+    // Four canvas pixels below the stepped tile's top edge once its reveal has settled.
+    await writeFile(
+      path.join(deckDir, "components", "SteppedDemo.tsx"),
+      component(
+        "SteppedDemo",
+        [
+          'import { Bento, SpotlightCard, Step } from "@elmeragroup/fuse-deck/components";',
+          'import type { BentoCursor } from "@elmeragroup/fuse-deck/components";',
+          "",
+          "const EDGE: BentoCursor = { x: 200, y: 4 };",
+        ],
+        [
+          "return (",
+          `    ${roomy}`,
+          "      <Bento columns={2} cursor={EDGE}>",
+          '        <Step index="1">',
+          '          <SpotlightCard title="Stepped"><div>S</div></SpotlightCard>',
+          "        </Step>",
+          '        <SpotlightCard title="Plain"><div>P</div></SpotlightCard>',
+          "      </Bento>",
+          "    </div>",
+          ");",
+        ]
+      )
+    );
+
     for (const [id, name, file] of [
       ["imported", "ImportedDemo", "ImportedDemo.tsx"],
       ["toggle", "ToggleDemo", "ToggleDemo.tsx"],
       ["mount", "MountDemo", "MountDemo.tsx"],
+      ["grow", "GrowDemo", "GrowDemo.tsx"],
+      ["stepped", "SteppedDemo", "SteppedDemo.tsx"],
     ] as const) {
       await writeFile(
         path.join(deckDir, "slides", `${id}.mdx`),
@@ -263,7 +341,7 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
           `import { ${name} } from "../components/${file}";`,
           "",
           `<${name} />`,
-          ...(id === "imported" ? ["<Step>Advance</Step>"] : []),
+          ...(id === "imported" || id === "stepped" ? ["<Step>Advance</Step>"] : []),
           "",
         ].join("\n")
       );
@@ -472,19 +550,19 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
     await onSlide("scaled", async (page) => {
       const grid = page.locator(".deck-bento");
       const half = page.locator(".deck-spotlight-card", { hasText: "Half" });
+      // Grid point 200, 150 on a card drawn at half its size is the card's own point 400, 300.
       await expect.poll(() => spot(half, "--deck-spot-alpha")).toBe(1);
-      const scripted = { x: await spot(half, "--deck-spot-x"), y: await spot(half, "--deck-spot-y") };
+      expect(await spot(half, "--deck-spot-x")).toBeCloseTo(400, 0);
+      expect(await spot(half, "--deck-spot-y")).toBeCloseTo(300, 0);
 
       // First somewhere else in the card, so the reading below comes from the real pointer.
       const { x, y, scale } = await frame(grid);
       await page.mouse.move(x + 60 * scale, y + 40 * scale);
-      await expect.poll(() => spot(half, "--deck-spot-x")).not.toBeCloseTo(scripted.x, 0);
+      await expect.poll(() => spot(half, "--deck-spot-x")).toBeCloseTo(120, 0);
 
-      // The scripted cursor's own point: 200, 150 in the grid's CSS pixels.
       await page.mouse.move(x + 200 * scale, y + 150 * scale);
-      await expect.poll(() => spot(half, "--deck-spot-x")).toBeCloseTo(scripted.x, 0);
-      expect(Math.abs((await spot(half, "--deck-spot-x")) - scripted.x)).toBeLessThanOrEqual(0.2);
-      expect(Math.abs((await spot(half, "--deck-spot-y")) - scripted.y)).toBeLessThanOrEqual(0.2);
+      await expect.poll(() => spot(half, "--deck-spot-x")).toBeCloseTo(400, 0);
+      expect(await spot(half, "--deck-spot-y")).toBeCloseTo(300, 0);
     });
   });
 
@@ -513,6 +591,140 @@ describe("<Bento> and <SpotlightCard> in a built deck", () => {
       } finally {
         await page.mouse.up();
       }
+    });
+  });
+
+  it("releases a press the pointer cancels", async () => {
+    await onSlide("pointer", async (page) => {
+      const left = page.locator(".deck-spotlight-card", { hasText: "Left" });
+      const box = await left.boundingBox();
+      expect(box).not.toBeNull();
+      if (box === null) {
+        return;
+      }
+      const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+      await page.mouse.move(point.x, point.y);
+      await page.mouse.down();
+      try {
+        await expect.poll(() => spot(left, "--deck-spot-press")).toBe(1);
+        await left.evaluate((element, { x, y }) => {
+          element.dispatchEvent(
+            new PointerEvent("pointercancel", { bubbles: true, pointerType: "mouse", clientX: x, clientY: y })
+          );
+        }, point);
+        await expect.poll(() => spot(left, "--deck-spot-press")).toBe(0);
+      } finally {
+        await page.mouse.up();
+      }
+    });
+  });
+
+  it("releases a press whose pointerup a button in the tile keeps from bubbling", async () => {
+    await onSlide("pointer", async (page) => {
+      const left = page.locator(".deck-spotlight-card", { hasText: "Left" });
+      await left.evaluate((element) => {
+        const hold = document.createElement("button");
+        hold.type = "button";
+        hold.textContent = "Hold";
+        hold.addEventListener("pointerup", (event) => {
+          event.stopPropagation();
+        });
+        element.querySelector(".deck-spotlight-content")?.append(hold);
+      });
+      const box = await left.getByRole("button", { name: "Hold" }).boundingBox();
+      expect(box).not.toBeNull();
+      if (box === null) {
+        return;
+      }
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await expect.poll(() => spot(left, "--deck-spot-press")).toBe(1);
+      await page.mouse.up();
+      await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2);
+      await expect.poll(() => spot(left, "--deck-spot-press")).toBe(0);
+      expect(await spot(left, "--deck-spot-alpha")).toBe(1);
+    });
+  });
+
+  it("keeps a scripted cursor's light when a touch lands on another tile", async () => {
+    await onSlide("scripted", async (page) => {
+      const lit = page.locator(".deck-spotlight-card", { hasText: "Under cursor" });
+      const beside = page.locator(".deck-spotlight-card", { hasText: "Beside" });
+      await expect.poll(() => spot(lit, "--deck-spot-alpha")).toBe(1);
+
+      const besideBox = await beside.boundingBox();
+      expect(besideBox).not.toBeNull();
+      if (besideBox === null) {
+        return;
+      }
+      const point = { x: besideBox.x + besideBox.width / 2, y: besideBox.y + besideBox.height / 2 };
+      // The listeners run while the event dispatches, so the readings below follow it.
+      await beside.evaluate((element, { x, y }) => {
+        element.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            pointerType: "touch",
+            isPrimary: true,
+            buttons: 1,
+            clientX: x,
+            clientY: y,
+          })
+        );
+      }, point);
+      expect(await spot(lit, "--deck-spot-alpha")).toBe(1);
+      expect(await spot(beside, "--deck-spot-alpha")).toBe(0);
+      expect(await spot(beside, "--deck-spot-press")).toBe(0);
+    });
+  });
+
+  it("relights the tiles a span change moves under a stationary scripted cursor", async () => {
+    await onSlide("grow", async (page) => {
+      const grow = page.locator(".deck-spotlight-card", { hasText: "Grow" });
+      const other = page.locator(".deck-spotlight-card", { hasText: "Other" });
+      await expect.poll(() => spot(other, "--deck-spot-alpha")).toBe(1);
+      expect(await spot(grow, "--deck-spot-alpha")).toBe(0);
+
+      await page.getByRole("button", { name: "Widen tile" }).dispatchEvent("click");
+      await expect.poll(() => grow.getAttribute("data-col-span")).toBe("2");
+      await expect.poll(() => spot(grow, "--deck-spot-alpha")).toBe(1);
+      // The other tile wraps to the second row, more than 150 canvas pixels below the cursor.
+      await expect.poll(() => spot(other, "--deck-spot-alpha")).toBe(0);
+    });
+  });
+
+  it("relights a stepped tile once its reveal has settled under a scripted cursor", async () => {
+    await onSlide("stepped", async (page) => {
+      const stepped = page.locator(".deck-spotlight-card", { hasText: "Stepped" });
+      const step = page.locator(".deck-bento > .deck-step");
+      await expect.poll(() => spot(stepped, "--deck-spot-alpha")).toBeGreaterThan(0);
+      expect(await step.getAttribute("data-revealed")).toBeNull();
+
+      await page.keyboard.press("ArrowRight");
+      await expect.poll(() => step.getAttribute("data-revealed")).toBe("");
+      await expect.poll(() => spot(stepped, "--deck-spot-alpha")).toBe(1);
+    });
+  });
+
+  it("keeps a tile in a layout-transparent wrapper within the grid's columns and rows", async () => {
+    await onSlide("contents", async (page) => {
+      const grid = page.locator(".deck-bento");
+      await grid.waitFor();
+      const tracks = await grid.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const list = (value: string) => value.split(" ").filter((track) => track !== "");
+        return { columns: list(style.gridTemplateColumns), rows: list(style.gridTemplateRows) };
+      });
+      expect(tracks.columns).toHaveLength(2);
+      expect(tracks.rows).toHaveLength(2);
+    });
+  });
+
+  it("draws an active card's contact shadow in the card-shadow role", async () => {
+    await onSlide("role", async (page) => {
+      const card = page.locator(".deck-spotlight-card", { hasText: "Role" });
+      await card.waitFor();
+      expect(await card.getAttribute("data-active")).toBe("");
+      expect(await card.evaluate((element) => getComputedStyle(element).boxShadow)).toContain("rgb(1, 2, 3)");
     });
   });
 

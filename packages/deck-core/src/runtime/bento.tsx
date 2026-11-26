@@ -52,6 +52,10 @@ type CardEntry = {
 
 type BentoContextValue = {
   readonly spotlightEnabled: boolean;
+  /** The grid's declared column count, which caps a tile's column span. */
+  readonly columns: NonNullable<BentoProps["columns"]>;
+  /** The grid's declared row count, which caps a tile's row span when it is set. */
+  readonly rows: BentoProps["rows"];
   readonly registerCard: (entry: CardEntry) => () => void;
 };
 
@@ -61,6 +65,16 @@ const BORDER_PROXIMITY = 150;
 
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
 const FINE_POINTER = "(hover: hover) and (pointer: fine)";
+
+/** Whether `event` comes from a touch contact, which never drives the real-pointer light. */
+function isTouch(event: PointerEvent): boolean {
+  return event.pointerType === "touch";
+}
+
+/** A tile's own transitions change no layout, so only the ones outside every tile reflow it. */
+function isOutsideCards(event: Event): boolean {
+  return event.target instanceof Element && event.target.closest(".deck-spotlight-card") === null;
+}
 
 /** A point in viewport coordinates, as pointer events and `getBoundingClientRect` give them. */
 type ClientPoint = {
@@ -235,24 +249,54 @@ export function Bento({
     }
   }, []);
 
+  const frameRef = useRef<number | null>(null);
+
+  /**
+   * Repaints one animation frame from now, after the layout the trigger started has settled; a
+   * later trigger replaces the pending frame. Does nothing once the grid has unmounted.
+   */
+  const scheduleRepaint = useCallback(() => {
+    if (gridRef.current === null) {
+      return;
+    }
+    if (frameRef.current !== null) {
+      cancelAnimationFrame(frameRef.current);
+    }
+    frameRef.current = requestAnimationFrame(() => {
+      frameRef.current = null;
+      repaint();
+    });
+  }, [repaint]);
+
+  // Watches the grid and every card for a size change; cards register before the grid's effects run.
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const observer = useCallback(() => {
+    observerRef.current ??= new ResizeObserver(scheduleRepaint);
+    return observerRef.current;
+  }, [scheduleRepaint]);
+
   const registerCard = useCallback(
     (entry: CardEntry) => {
       cardsRef.current.add(entry);
-      repaint();
+      observer().observe(entry.element);
+      scheduleRepaint();
       return () => {
         cardsRef.current.delete(entry);
-        repaint();
+        observerRef.current?.unobserve(entry.element);
+        scheduleRepaint();
       };
     },
-    [repaint]
+    [observer, scheduleRepaint]
   );
 
   const contextValue = useMemo<BentoContextValue>(
     () => ({
       spotlightEnabled: spotlight,
+      columns,
+      rows,
       registerCard,
     }),
-    [spotlight, registerCard]
+    [spotlight, columns, rows, registerCard]
   );
 
   // The props that move the input or the cards; the layout ones reflow the grid under the cursor.
@@ -262,58 +306,69 @@ export function Bento({
     repaint();
   }, [spotlight, cursor, columns, rows, gap, repaint]);
 
-  // The real pointer, the media queries and the window size.
+  // The real pointer, the media queries, the window size and the grid's layout.
   useEffect(() => {
+    const grid = gridRef.current;
     const reducedQuery = window.matchMedia(REDUCED_MOTION);
     const finePointer = window.matchMedia(FINE_POINTER);
-    let frame: number | null = null;
 
+    // Read in the capture phase, so a tile's own handler cannot hide a press or its release.
     const onPointer = (event: PointerEvent) => {
-      pointerRef.current = { clientX: event.clientX, clientY: event.clientY };
-      if (event.type === "pointerdown") {
-        pressedRef.current = true;
-      } else if (event.type === "pointerup") {
-        pressedRef.current = false;
+      if (isTouch(event)) {
+        return;
       }
+      pointerRef.current = { clientX: event.clientX, clientY: event.clientY };
+      pressedRef.current = event.buttons !== 0;
       repaint();
     };
-    const onPointerLeave = () => {
+    const onPointerExit = (event: PointerEvent) => {
+      if (isTouch(event)) {
+        return;
+      }
       pointerRef.current = null;
       pressedRef.current = false;
       repaint();
     };
-    // The deck applies a new canvas scale in the render after `resize`, so measure a frame later.
-    const onResize = () => {
-      if (frame !== null) {
-        cancelAnimationFrame(frame);
+    // A wrapper settling, such as a revealed `<Step>`, moves its tiles without resizing them.
+    const onTransitionEnd = (event: TransitionEvent) => {
+      if (isOutsideCards(event)) {
+        scheduleRepaint();
       }
-      frame = requestAnimationFrame(() => {
-        frame = null;
-        repaint();
-      });
     };
 
-    window.addEventListener("pointermove", onPointer, { passive: true });
-    window.addEventListener("pointerdown", onPointer, { passive: true });
-    window.addEventListener("pointerup", onPointer, { passive: true });
-    document.documentElement.addEventListener("pointerleave", onPointerLeave);
+    const capture = { capture: true, passive: true };
+    window.addEventListener("pointermove", onPointer, capture);
+    window.addEventListener("pointerdown", onPointer, capture);
+    window.addEventListener("pointerup", onPointer, capture);
+    window.addEventListener("pointercancel", onPointerExit, capture);
+    document.documentElement.addEventListener("pointerleave", onPointerExit);
     reducedQuery.addEventListener("change", repaint);
     finePointer.addEventListener("change", repaint);
-    window.addEventListener("resize", onResize);
+    // The deck applies a new canvas scale in the render after `resize`, a transform no observer sees.
+    window.addEventListener("resize", scheduleRepaint);
+    if (grid !== null) {
+      observer().observe(grid);
+      grid.addEventListener("transitionend", onTransitionEnd);
+    }
 
     return () => {
-      window.removeEventListener("pointermove", onPointer);
-      window.removeEventListener("pointerdown", onPointer);
-      window.removeEventListener("pointerup", onPointer);
-      document.documentElement.removeEventListener("pointerleave", onPointerLeave);
+      window.removeEventListener("pointermove", onPointer, capture);
+      window.removeEventListener("pointerdown", onPointer, capture);
+      window.removeEventListener("pointerup", onPointer, capture);
+      window.removeEventListener("pointercancel", onPointerExit, capture);
+      document.documentElement.removeEventListener("pointerleave", onPointerExit);
       reducedQuery.removeEventListener("change", repaint);
       finePointer.removeEventListener("change", repaint);
-      window.removeEventListener("resize", onResize);
-      if (frame !== null) {
-        cancelAnimationFrame(frame);
+      window.removeEventListener("resize", scheduleRepaint);
+      grid?.removeEventListener("transitionend", onTransitionEnd);
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
       }
     };
-  }, [repaint]);
+  }, [repaint, scheduleRepaint, observer]);
 
   const gridStyle: CSSProperties = { gap: `${String(gap)}px` };
 
@@ -350,6 +405,10 @@ export function SpotlightCard({
   const bento = use(BentoContext);
   const cardRef = useRef<HTMLDivElement>(null);
   const enabled = spotlight && (bento === null || bento.spotlightEnabled);
+  // Inside `<Bento>` a tile spans at most the tracks the grid declares, so it never adds implicit ones.
+  const columnSpan = bento === null ? colSpan : Math.min(colSpan, bento.columns);
+  const rowCount = bento?.rows;
+  const rowSpanned = rowCount === undefined ? rowSpan : Math.min(rowSpan, rowCount);
 
   useEffect(() => {
     const card = cardRef.current;
@@ -366,43 +425,38 @@ export function SpotlightCard({
 
     const reducedQuery = window.matchMedia(REDUCED_MOTION);
     const finePointer = window.matchMedia(FINE_POINTER);
-    let pressed = false;
 
-    const paintFromClient = (clientX: number, clientY: number) => {
-      if (reducedQuery.matches || !finePointer.matches) {
+    // Read in the capture phase, so a handler inside the card cannot hide a press or its release.
+    const onPointer = (event: PointerEvent) => {
+      if (isTouch(event) || reducedQuery.matches || !finePointer.matches) {
         return;
       }
-      paintCardAtClient(card, clientX, clientY, pressed);
-    };
-
-    const onPointerMove = (event: PointerEvent) => {
-      paintFromClient(event.clientX, event.clientY);
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      pressed = true;
-      paintFromClient(event.clientX, event.clientY);
-    };
-    const onPointerUp = (event: PointerEvent) => {
-      pressed = false;
-      paintFromClient(event.clientX, event.clientY);
+      paintCardAtClient(card, event.clientX, event.clientY, event.buttons !== 0);
     };
     const onClear = () => {
-      pressed = false;
       clearCardSpotlight(card);
     };
+    const onPointerExit = (event: PointerEvent) => {
+      if (!isTouch(event)) {
+        onClear();
+      }
+    };
 
-    window.addEventListener("pointermove", onPointerMove, { passive: true });
-    card.addEventListener("pointerdown", onPointerDown, { passive: true });
-    window.addEventListener("pointerup", onPointerUp, { passive: true });
-    document.documentElement.addEventListener("pointerleave", onClear);
+    const capture = { capture: true, passive: true };
+    window.addEventListener("pointermove", onPointer, capture);
+    window.addEventListener("pointerdown", onPointer, capture);
+    window.addEventListener("pointerup", onPointer, capture);
+    window.addEventListener("pointercancel", onPointerExit, capture);
+    document.documentElement.addEventListener("pointerleave", onPointerExit);
     reducedQuery.addEventListener("change", onClear);
     finePointer.addEventListener("change", onClear);
 
     return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      card.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("pointerup", onPointerUp);
-      document.documentElement.removeEventListener("pointerleave", onClear);
+      window.removeEventListener("pointermove", onPointer, capture);
+      window.removeEventListener("pointerdown", onPointer, capture);
+      window.removeEventListener("pointerup", onPointer, capture);
+      window.removeEventListener("pointercancel", onPointerExit, capture);
+      document.documentElement.removeEventListener("pointerleave", onPointerExit);
       reducedQuery.removeEventListener("change", onClear);
       finePointer.removeEventListener("change", onClear);
     };
@@ -415,8 +469,8 @@ export function SpotlightCard({
     <div
       ref={cardRef}
       className={className === undefined ? "deck-spotlight-card" : `deck-spotlight-card ${className}`}
-      data-col-span={colSpan > 1 ? String(colSpan) : undefined}
-      data-row-span={rowSpan > 1 ? String(rowSpan) : undefined}
+      data-col-span={columnSpan > 1 ? String(columnSpan) : undefined}
+      data-row-span={rowSpanned > 1 ? String(rowSpanned) : undefined}
       data-active={active ? "" : undefined}
       data-spotlight={enabled ? "on" : "off"}>
       <span className="deck-spotlight-light" aria-hidden="true" />
