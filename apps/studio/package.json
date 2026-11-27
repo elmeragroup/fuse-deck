@@ -25,6 +25,7 @@
     "type-check": "tsrs --noEmit && tsrs --noEmit -p tsconfig.renderer.json && tsrs --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
+    "@base-ui/react": "catalog:",
     "@effect/platform-node": "catalog:",
     "@fontsource-variable/inter": "catalog:",
     "@mdx-js/mdx": "catalog:",

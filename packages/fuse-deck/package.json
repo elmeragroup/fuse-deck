@@ -28,6 +28,7 @@
     "test:packed-consumer": "node scripts/packed-smoke.ts"
   },
   "dependencies": {
+    "@base-ui/react": "catalog:",
     "@effect/platform-node": "catalog:",
     "@fontsource-variable/inter": "catalog:",
     "@mdx-js/mdx": "catalog:",

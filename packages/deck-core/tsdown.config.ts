@@ -17,7 +17,12 @@ export default defineConfig({
   dts: true,
   clean: true,
   deps: {
-    neverBundle: [/^react(?:-dom)?(?:\/.*)?$/, /^@elmeragroup\/fuse(?:\/.*)?$/, "virtual:fuse-deck"],
+    neverBundle: [
+      /^react(?:-dom)?(?:\/.*)?$/,
+      /^@base-ui\/react(?:\/.*)?$/,
+      /^@elmeragroup\/fuse(?:\/.*)?$/,
+      "virtual:fuse-deck",
+    ],
   },
   copy: [{ from: "src/runtime/deck.css", to: "dist/runtime" }],
 });
