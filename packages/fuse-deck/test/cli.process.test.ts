@@ -395,7 +395,7 @@ describe("fuse-deck --json", () => {
     expect(oneDocument(fuseDeck(deck, ["check", "--json"]), Tagged)._tag).toBe("DeckChecked");
   });
 
-  it("describes <Bento> and <SpotlightCard> with their usages", () => {
+  it("describes <Bento>, <SpotlightCard>, <Metrics> and <Metric> with their usages", () => {
     const deck = createDeck();
     const vocabulary = Schema.decodeSync(
       Schema.fromJsonString(
@@ -405,11 +405,19 @@ describe("fuse-deck --json", () => {
       )
     )(fuseDeck(deck, ["describe", "--json"]).stdout);
     const usages = vocabulary.components
-      .filter(({ name }) => name === "Bento" || name === "SpotlightCard")
+      .filter(({ name }) => ["Bento", "SpotlightCard", "Metrics", "Metric"].includes(name))
       .map(({ name, usage }) => ({ name, usage }));
     expect(usages).toEqual([
       { name: "Bento", usage: "<Bento columns={4} rows={3}><SpotlightCard>…</SpotlightCard></Bento>" },
       { name: "SpotlightCard", usage: '<SpotlightCard colSpan={2} title="Button">…</SpotlightCard>' },
+      {
+        name: "Metrics",
+        usage: '<Metrics columns={4} dividers><Metric value="94" label="Components" /></Metrics>',
+      },
+      {
+        name: "Metric",
+        usage: '<Metric value="94" label="Components" detail="Forms, tables, dialogs and charts" />',
+      },
     ]);
   });
 
