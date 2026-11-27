@@ -1,12 +1,12 @@
 /**
  * Public browser runtime components that deck-local `.tsx` modules can import via
  * `@elmeragroup/fuse-deck/components`. Built alongside `main.tsx` so both entries share the same
- * React contexts (`RevealedSteps`, `SlideBackdrop`, `Bento`).
+ * React contexts (`RevealedSteps`, `SlideBackdrop`, `Bento`, `Metrics`).
  */
 export { Bento, SpotlightCard } from "./bento.tsx";
 export type { BentoCursor, BentoProps, SpotlightCardProps } from "./bento.tsx";
-export { ElmeraCover } from "./elmera-cover.tsx";
-export type { ElmeraCoverBackground, ElmeraCoverProps } from "./elmera-cover.tsx";
+export { ElmeraCover, ElmeraCoverTagline } from "./elmera-cover.tsx";
+export type { ElmeraCoverBackground, ElmeraCoverProps, ElmeraCoverTaglineProps } from "./elmera-cover.tsx";
 export { Metric, Metrics } from "./metrics.tsx";
 export type {
   MetricAlign,

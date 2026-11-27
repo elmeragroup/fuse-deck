@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { chromium } from "playwright";
@@ -145,7 +145,57 @@ describe("<ElmeraCover> in a built deck", () => {
         "</Split>",
         "",
       ].join("\n"),
+      "elmera-render-link": [
+        "---",
+        "layout: center",
+        "---",
+        "",
+        '<ElmeraCover background="ghost-fiber">',
+        "  <ElmeraCover.Tagline",
+        '    data-composed="link"',
+        '    render={<a href="https://fuse.elmeragroup.no/" target="_blank" rel="noreferrer" />}',
+        "  >",
+        "    fuse.elmeragroup.no",
+        "  </ElmeraCover.Tagline>",
+        "</ElmeraCover>",
+        "",
+      ].join("\n"),
+      "elmera-render-fn": [
+        "---",
+        "layout: center",
+        "---",
+        "",
+        'import { InteractiveTagline } from "../components/InteractiveTagline.tsx";',
+        "",
+        "<InteractiveTagline />",
+        "",
+      ].join("\n"),
     };
+
+    await mkdir(path.join(deck, "components"), { recursive: true });
+    await writeFile(
+      path.join(deck, "components/InteractiveTagline.tsx"),
+      [
+        'import { useState } from "react";',
+        'import { ElmeraCover } from "@elmeragroup/fuse-deck/components";',
+        "",
+        "export function InteractiveTagline() {",
+        "  const [clicks, setClicks] = useState(0);",
+        "  return (",
+        '    <ElmeraCover.Root background="none">',
+        "      <ElmeraCover.Tagline",
+        '        data-composed="action"',
+        "        render={(props) => (",
+        '          <button type="button" {...props} onClick={() => setClicks((count) => count + 1)} />',
+        "        )}>",
+        "        {`Clicked ${String(clicks)}`}",
+        "      </ElmeraCover.Tagline>",
+        "    </ElmeraCover.Root>",
+        "  );",
+        "}",
+        "",
+      ].join("\n")
+    );
 
     for (const [id, text] of Object.entries(slideSources)) {
       fuseDeck(deck, ["slides", "add", id, "--layout", "center"]);
@@ -621,6 +671,74 @@ describe("<ElmeraCover> in a built deck", () => {
       await slide.locator("canvas").waitFor();
       expect(await slide.locator(".deck-slide-backdrop").count()).toBe(1);
       expect(await page.locator(".deck-slide > .deck-layout:first-child").count()).toBe(1);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it("composes <ElmeraCover.Tagline render={<a ... />}> with grid placement, merged props and no default tagline", async () => {
+    const page = await browser.newPage({
+      reducedMotion: "reduce",
+      viewport: { width: 1280, height: 720 },
+    });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    try {
+      await page.goto(`${site}#/elmera-render-link`);
+      const slide = page.locator("[aria-roledescription=slide]");
+      await slide.waitFor();
+      await slide.locator("canvas").waitFor();
+
+      const link = slide.getByRole("link", { name: "fuse.elmeragroup.no" });
+      await link.waitFor();
+
+      expect(await slide.getByText("Preferred by more customers. Every day.").count()).toBe(0);
+      expect(await link.getAttribute("href")).toBe("https://fuse.elmeragroup.no/");
+      expect(await link.getAttribute("target")).toBe("_blank");
+      expect(await link.getAttribute("rel")).toBe("noreferrer");
+      expect(await link.getAttribute("data-composed")).toBe("link");
+      expect(await link.evaluate((element) => getComputedStyle(element).fontFamily)).toContain(
+        "Inter Variable"
+      );
+
+      const logo = slide.getByRole("img", { name: "Elmera Group" });
+      const slideBox = await slide.boundingBox();
+      const logoBox = await logo.boundingBox();
+      const linkBox = await link.boundingBox();
+      expect(slideBox).not.toBeNull();
+      expect(logoBox).not.toBeNull();
+      expect(linkBox).not.toBeNull();
+      if (slideBox !== null && logoBox !== null && linkBox !== null) {
+        const logoCenter = logoBox.y + logoBox.height / 2;
+        const slideCenter = slideBox.y + slideBox.height / 2;
+        expect(Math.abs(logoCenter - slideCenter)).toBeLessThanOrEqual(2);
+        expect(linkBox.y).toBeGreaterThan(logoBox.y + logoBox.height);
+      }
+      expect(errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it("supports <ElmeraCover.Root> and <ElmeraCover.Tagline render={(props) => ...}> from @elmeragroup/fuse-deck/components", async () => {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    try {
+      await page.goto(`${site}#/elmera-render-fn`);
+      const slide = page.locator("[aria-roledescription=slide]");
+      await slide.waitFor();
+
+      const button = slide.getByRole("button", { name: "Clicked 0" });
+      await button.waitFor();
+      expect(await button.getAttribute("data-composed")).toBe("action");
+      expect(await button.evaluate((element) => getComputedStyle(element).fontFamily)).toContain(
+        "Inter Variable"
+      );
+
+      await button.click();
+      await slide.getByRole("button", { name: "Clicked 1" }).waitFor();
+      expect(errors).toEqual([]);
     } finally {
       await page.close();
     }

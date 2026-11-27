@@ -134,17 +134,39 @@ const DEEP_IMPORT = `try {
 }`;
 
 /** A consumer module that uses the components entry's values and types as documented. */
-const TYPED_CONSUMER = `import { Bento, Metric, Metrics, SpotlightCard, Step } from "@elmeragroup/fuse-deck/components";
-import type { BentoCursor, BentoProps, MetricProps, MetricsProps } from "@elmeragroup/fuse-deck/components";
+const TYPED_CONSUMER = `import {
+  Bento,
+  ElmeraCover,
+  ElmeraCoverTagline,
+  Metric,
+  Metrics,
+  SpotlightCard,
+  Step,
+} from "@elmeragroup/fuse-deck/components";
+import type {
+  BentoCursor,
+  BentoProps,
+  ElmeraCoverProps,
+  ElmeraCoverTaglineProps,
+  MetricProps,
+  MetricsProps,
+} from "@elmeragroup/fuse-deck/components";
 
 const cursor: BentoCursor = { x: 180, y: 120, pressed: true };
 const layout: BentoProps = { columns: 3, rows: 2, gap: 24, spotlight: true, cursor };
 const band: MetricsProps = { columns: 4, dividers: true, size: "default", align: "start" };
 const item: MetricProps = { value: "94", label: "Components", detail: "Forms and charts" };
+const cover: ElmeraCoverProps = { background: "ghost-fiber" };
+const taglineProps: ElmeraCoverTaglineProps = {
+  render: <a href="https://fuse.elmeragroup.no/" target="_blank" rel="noreferrer" />,
+};
 
 export function Demo() {
   return (
     <>
+      <ElmeraCover {...cover}>
+        <ElmeraCoverTagline {...taglineProps}>fuse.elmeragroup.no</ElmeraCoverTagline>
+      </ElmeraCover>
       <Metrics {...band}>
         <Metric {...item} />
       </Metrics>

@@ -36,7 +36,7 @@ export const COMPONENTS_ID = "@elmeragroup/fuse-deck/components";
  * exactly, so `react` never rewrites `react/jsx-runtime` or `react-dom/client`.
  */
 const PACKAGE_RESOLVED =
-  /^(?:react|react-dom|react-dom\/client|react\/jsx-runtime|react\/jsx-dev-runtime|@elmeragroup\/fuse(?:\/.+)?|@fontsource-variable\/inter(?:\/.+)?)$/;
+  /^(?:react|react-dom|react-dom\/client|react\/jsx-runtime|react\/jsx-dev-runtime|@base-ui\/react(?:\/.+)?|@elmeragroup\/fuse(?:\/.+)?|@fontsource-variable\/inter(?:\/.+)?)$/;
 
 /** A JavaScript file Vite's dependency optimizer can bundle, as Vite 8.3 tests it. */
 const OPTIMIZABLE = /\.[cm]?[jt]s$/;
